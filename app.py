@@ -8,16 +8,28 @@ from fpdf import FPDF
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================
-# 1. GOOGLE SHEETS BAGLANTISI VE YARDIMCILAR
+# 1. GOOGLE SHEETS BAĞLANTISI VE YARDIMCILAR
 # ==========================================
 st.set_page_config(page_title="Konya Lisesi Bilgi Toplama Sistemi", layout="wide")
 conn_gs = st.connection("gsheets", type=GSheetsConnection)
 
+def clean_numara(val):
+    if pd.isna(val) or val == "":
+        return ""
+    val_str = str(val).strip()
+    if val_str.endswith('.0'):
+        val_str = val_str[:-2]
+    return val_str
+
 def get_data(worksheet_name):
-    """Google Sheet uzerindeki ilgili sekmeden veriyi canlı çeker."""
+    """Google Sheet üzerinden veriyi çeker ve tipleri temizler."""
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=0)
-        return df if df is not None else pd.DataFrame()
+        if df is not None and not df.empty:
+            if "numara" in df.columns:
+                df["numara"] = df["numara"].apply(clean_numara)
+            return df
+        return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
@@ -50,37 +62,7 @@ def tr_fix(text):
     return text
 
 # ==========================================
-# 2. VARSAYILAN TABLO YAPISI KONTROLU
-# ==========================================
-def init_sheets():
-    df_q = get_data("sorular")
-    if df_q.empty or "soru_metni" not in df_q.columns:
-        varsayilan_sorular = [
-            {"id": 1, "soru_metni": "VELİSİ KİM?", "soru_tipi": "coktan_secmeli", "secenekler": "ANNE,BABA,DİĞER", "sira": 1, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 2, "soru_metni": "VELİNİN TC KİMLİK NUMARASI", "soru_tipi": "tc_no", "secenekler": "", "sira": 2, "bagli_parent_id": 1, "bagli_parent_deger": "DİĞER"},
-            {"id": 3, "soru_metni": "VELİNİN ADI SOYADI", "soru_tipi": "metin", "secenekler": "", "sira": 3, "bagli_parent_id": 1, "bagli_parent_deger": "DİĞER"},
-            {"id": 4, "soru_metni": "VELİNİN TELEFON NUMARASI", "soru_tipi": "telefon", "secenekler": "", "sira": 4, "bagli_parent_id": 1, "bagli_parent_deger": "DİĞER"},
-            {"id": 5, "soru_metni": "YAKINLIK DERECESİ", "soru_tipi": "coktan_secmeli", "secenekler": "DAYI,AMCA,TEYZE,HALA,DEDE,NİNE,DİĞER", "sira": 5, "bagli_parent_id": 1, "bagli_parent_deger": "DİĞER"},
-            {"id": 6, "soru_metni": "ÖĞRENCİ ÖZEL DURUMU", "soru_tipi": "coklu_secim", "secenekler": "AİLE BÖLÜNMÜŞ (ANNE-BABA AYRI),YETİM (BABA VEFAT),ÖKSÜZ (ANNE VEFAT),ŞEHİT/GAZİ YAKINI,ENGEL DURUMU VAR,YOK", "sira": 6, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 7, "soru_metni": "SÜREKLİ HASTALIĞI / KRONİK RAHATSIZLIK", "soru_tipi": "coklu_secim", "secenekler": "DİYABET,ASTIM,ALERJİ,KALP HASTALIĞI,TANSİYON,EPRİLEPSİ,YOK", "sira": 7, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 8, "soru_metni": "GEÇİRDİĞİ AMELİYAT VEYA KAZA", "soru_tipi": "metin", "secenekler": "", "sira": 8, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 9, "soru_metni": "KİMİNLE OTURUYOR?", "soru_tipi": "coktan_secmeli", "secenekler": "AİLE,ANNE,BABA,AKRABA,YURT,YALNIZ", "sira": 9, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 10, "soru_metni": "OTURDUĞU EV", "soru_tipi": "coktan_secmeli", "secenekler": "KENDİ EVİMİZ,KİRA,LOJMAN", "sira": 10, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 11, "soru_metni": "KENDİ ODASI VAR MI?", "soru_tipi": "coktan_secmeli", "secenekler": "VAR,YOK", "sira": 11, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 12, "soru_metni": "EV İSINMA TİPİ", "soru_tipi": "coktan_secmeli", "secenekler": "KALORİFER,DOĞALGAZ,SOBA,KLİMA", "sira": 12, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 13, "soru_metni": "EVDE İNTERNET VAR MI?", "soru_tipi": "coktan_secmeli", "secenekler": "VAR,YOK", "sira": 13, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 14, "soru_metni": "KENDİSİNE AİT BİLGİSAYAR/TABLET VAR MI?", "soru_tipi": "coktan_secmeli", "secenekler": "VAR,YOK", "sira": 14, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 15, "soru_metni": "BABA MESLEĞİ", "soru_tipi": "metin", "secenekler": "", "sira": 15, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 16, "soru_metni": "ANNE MESLEĞİ", "soru_tipi": "metin", "secenekler": "", "sira": 16, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 17, "soru_metni": "AİLE AYLIK ORTALAMA GELİRİ", "soru_tipi": "coktan_secmeli", "secenekler": "ASGARİ ÜCRET ALTI,ASGARİ ÜCRET,ASGARİ ÜCRET ÜSTÜ", "sira": 17, "bagli_parent_id": 0, "bagli_parent_deger": ""},
-            {"id": 18, "soru_metni": "OKULA ULAŞIM ŞEKLİ", "soru_tipi": "coktan_secmeli", "secenekler": "YÜRÜYEREK,SERVİS,TOPLU TAŞIMA,ÖZEL ARAÇ", "sira": 18, "bagli_parent_id": 0, "bagli_parent_deger": ""}
-        ]
-        save_data("sorular", pd.DataFrame(varsayilan_sorular))
-
-init_sheets()
-
-# ==========================================
-# 3. e-OKUL EXCEL PARSER & PDF
+# 2. e-OKUL EXCEL PARSER & PDF
 # ==========================================
 def parse_and_save_eokul(file_buffer):
     def clean(val):
@@ -123,14 +105,8 @@ def parse_and_save_eokul(file_buffer):
                 val_num, val_ad = row_cells[use_num], row_cells[use_ad]
                 val_soyad = row_cells[use_soyad] if len(row_cells) > use_soyad else ""
                 
-                numara_str = None
-                try:
-                    num_float = float(val_num)
-                    if num_float > 0 and num_float.is_integer():
-                        numara_str = str(int(num_float))
-                except ValueError: pass
-                
-                if numara_str and val_ad and val_ad.lower() not in ["adı", "ad", "öğrenci no"]:
+                numara_str = clean_numara(val_num)
+                if numara_str.isdigit() and val_ad and val_ad.lower() not in ["adı", "ad", "öğrenci no"]:
                     all_students.append({
                         "numara": str(numara_str),
                         "sinif": c_sinif if c_sinif else "Tanımsız",
@@ -192,7 +168,7 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
     return pdf.output()
 
 # ==========================================
-# 4. STREAMLIT ARAYÜZÜ
+# 3. STREAMLIT ARAYÜZÜ
 # ==========================================
 st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
 tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
@@ -206,20 +182,19 @@ with tab1:
         df_questions = df_questions.sort_values(by=["sira", "id"])
 
     if df_students.empty:
-        st.info("Sistemde henüz öğrenci listesi tanımlı değil.")
+        st.info("Sistemde henüz öğrenci listesi tanımlı değil. Lütfen Yönetim Paneli'nden e-Okul listesi yükleyin.")
     elif df_questions.empty:
         st.warning("Formda henüz soru tanımlanmamış.")
     else:
-        df_students["numara"] = df_students["numara"].astype(str)
-        siniflar = sorted(df_students["sinif"].unique(), key=sort_sinif_sube_key)
+        siniflar = sorted(df_students["sinif"].astype(str).unique(), key=sort_sinif_sube_key)
         secilen_sinif = st.selectbox("Sınıfınızı Seçin:", ["SEÇİNİZ"] + siniflar)
         
         if secilen_sinif != "SEÇİNİZ":
-            subeler = sorted(df_students[df_students["sinif"] == secilen_sinif]["sube"].unique())
+            subeler = sorted(df_students[df_students["sinif"].astype(str) == secilen_sinif]["sube"].astype(str).unique())
             secilen_sube = st.selectbox("Şubenizi Seçin:", ["SEÇİNİZ"] + subeler)
             
             if secilen_sube != "SEÇİNİZ":
-                filtered = df_students[(df_students["sinif"] == secilen_sinif) & (df_students["sube"] == secilen_sube)].copy()
+                filtered = df_students[(df_students["sinif"].astype(str) == secilen_sinif) & (df_students["sube"].astype(str) == secilen_sube)].copy()
                 filtered["display"] = filtered.apply(lambda r: f"{r['numara']} - {mask_name(r['ad_soyad'])}", axis=1)
                 
                 secilen_ogrenci = st.selectbox("Numaranızı ve Adınızı Seçin:", ["SEÇİNİZ"] + list(filtered["display"]))
@@ -230,13 +205,15 @@ with tab1:
                     df_yanitlar = get_data("yanitlar")
                     mevcut_yanit = pd.DataFrame()
                     if not df_yanitlar.empty and "numara" in df_yanitlar.columns:
-                        df_yanitlar["numara"] = df_yanitlar["numara"].astype(str)
                         mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no]
                     
                     can_submit, is_update = True, False
                     eski_cevaplar = {}
                     if not mevcut_yanit.empty:
-                        eski_cevaplar = json.loads(mevcut_yanit.iloc[0]["yanitlar_json"])
+                        try:
+                            eski_cevaplar = json.loads(mevcut_yanit.iloc[0]["yanitlar_json"])
+                        except Exception:
+                            eski_cevaplar = {}
                         st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuş.")
                         if st.checkbox("Yanıtlarımı güncellemek istiyorum."): is_update = True
                         else: can_submit = False
@@ -326,14 +303,14 @@ with tab1:
                                 if df_yanitlar.empty:
                                     df_yanitlar = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
                                 
-                                if is_update:
+                                if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
                                     df_yanitlar.loc[df_yanitlar["numara"] == secilen_no, ["yanitlar_json", "tarih"]] = [json_data, tarih]
                                 else:
                                     new_row = pd.DataFrame([{"numara": secilen_no, "yanitlar_json": json_data, "tarih": tarih}])
                                     df_yanitlar = pd.concat([df_yanitlar, new_row], ignore_index=True)
                                 
                                 save_data("yanitlar", df_yanitlar)
-                                st.success("✅ Form yanıtlarınız Google Sheets üzerine kaydedildi!")
+                                st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
 with tab2:
@@ -345,34 +322,65 @@ with tab2:
         df_y = get_data("yanitlar")
         df_q = get_data("sorular")
         
-        if not df_o.empty: df_o["numara"] = df_o["numara"].astype(str)
-        if not df_y.empty: df_y["numara"] = df_y["numara"].astype(str)
-        if not df_q.empty and "sira" in df_q.columns: df_q = df_q.sort_values(by=["sira", "id"])
+        if not df_q.empty and "sira" in df_q.columns: 
+            df_q = df_q.sort_values(by=["sira", "id"])
         
         merged_all = pd.merge(df_o, df_y, on='numara', how='left') if not df_o.empty else pd.DataFrame()
         if not merged_all.empty:
-            merged_all['FORM DURUMU'] = merged_all['yanitlar_json'].apply(lambda x: "DOLDURDU" if pd.notna(x) and str(x) != "" else "DOLDURMADI")
-            merged_all['sinif_sube'] = merged_all['sinif'] + merged_all['sube']
+            merged_all['FORM DURUMU'] = merged_all['yanitlar_json'].apply(lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() != "" else "DOLDURMADI")
+            merged_all['sinif_sube'] = merged_all['sinif'].astype(str) + "/" + merged_all['sube'].astype(str)
         
         sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
-            "📊 İstatistikler", "📗 Excel Raporu", "📄 PDF Dökümleri", "🛠️ Soruları Yönet"
+            "📊 İstatistikler", "📗 Excel Raporu", "📄 PDF Dökümleri", "🛠️ Soru & e-Okul Yönetimi"
         ])
         
+        # --- SUB TAB 1: İSTATİSTİKLER ---
         with sub_tab1:
-            st.markdown("### 📈 Doldurma Durum Takibi")
+            st.markdown("### 📈 Genel ve Sınıf Bazlı Durum Takibi")
             if not merged_all.empty:
                 toplam_ogr = len(df_o)
                 dolduran_ogr = len(merged_all[merged_all['FORM DURUMU'] == 'DOLDURDU'])
-                st.metric("Toplam Öğrenci", toplam_ogr)
-                st.metric("Form Dolduran", dolduran_ogr)
+                doldurmayan_ogr = toplam_ogr - dolduran_ogr
+                orani = int((dolduran_ogr / toplam_ogr) * 100) if toplam_ogr > 0 else 0
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Toplam Öğrenci", toplam_ogr)
+                col2.metric("Form Dolduran", dolduran_ogr)
+                col3.metric("Doldurmayan", doldurmayan_ogr)
+                col4.metric("Tamamlanma Oranı", f"%{orani}")
+                
+                st.divider()
+                st.markdown("#### Sınıf/Şube Bazında Doldurma Durumları")
+                stats_df = merged_all.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
+                if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
+                if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
+                stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
+                stats_df['TAMAMLANMA %'] = ((stats_df['DOLDURDU'] / stats_df['TOPLAM']) * 100).round(1)
+                st.dataframe(stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'TAMAMLANMA %']], use_container_width=True)
+                
+                with st.expander("🚨 Formu Henüz Doldurmayan Öğrenciler Listesi"):
+                    doldurmayanlar = merged_all[merged_all['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
+                    st.dataframe(doldurmayanlar, use_container_width=True)
+            else:
+                st.info("Sistemde henüz öğrenci verisi yok.")
 
+        # --- SUB TAB 2: EXCEL RAPORU ---
         with sub_tab2:
             st.markdown("### 📗 Toplu Excel İndirme")
-            if not merged_all.empty:
+            if not merged_all.empty and not df_q.empty:
                 excel_rows = []
                 for idx, r in merged_all.iterrows():
-                    ans_dict = json.loads(r['yanitlar_json']) if pd.notna(r['yanitlar_json']) and r['yanitlar_json'] else {}
-                    row_data = {"SINIFI": r.get('sinif_sube', ''), "OKUL NO": r['numara'], "ADI SOYADI": r['ad_soyad']}
+                    ans_dict = {}
+                    if pd.notna(r.get('yanitlar_json')) and r['yanitlar_json']:
+                        try: ans_dict = json.loads(r['yanitlar_json'])
+                        except Exception: pass
+                        
+                    row_data = {
+                        "SINIF/ŞUBE": r.get('sinif_sube', ''), 
+                        "OKUL NO": r['numara'], 
+                        "ADI SOYADI": r['ad_soyad'],
+                        "DURUM": r['FORM DURUMU']
+                    }
                     for _, q in df_q.iterrows():
                         row_data[q['soru_metni']] = ans_dict.get(str(q['id']), "")
                     excel_rows.append(row_data)
@@ -380,21 +388,97 @@ with tab2:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     pd.DataFrame(excel_rows).to_excel(writer, index=False)
-                st.download_button("📊 EXCEL İNDİR", data=output.getvalue(), file_name="RAPOR.xlsx")
+                st.download_button("📊 TÜM VERİLERİ EXCEL OLARAK İNDİR", data=output.getvalue(), file_name="OKUL_BILGI_FORMU_RAPOR.xlsx")
 
+        # --- SUB TAB 3: PDF DÖKÜMLERİ ---
         with sub_tab3:
-            st.markdown("### 📄 Sınıf PDF Dökümleri")
-            if not merged_all.empty:
+            st.markdown("### 📄 Sınıf Bazlı PDF Dökümleri")
+            if not merged_all.empty and not df_q.empty:
                 tum_subeler = sorted(merged_all['sinif_sube'].unique().tolist(), key=sort_sinif_sube_key)
                 secilen_pdf_sube = st.selectbox("Sınıf Seçin:", tum_subeler)
-                if st.button("PDF Oluştur"):
+                if st.button("PDF Raporu Oluştur"):
                     sube_students = merged_all[merged_all['sinif_sube'] == secilen_pdf_sube]
                     pdf_bytes = generate_class_pdf(sube_students, df_q, secilen_pdf_sube)
-                    st.download_button(f"📥 {secilen_pdf_sube}.pdf İndir", data=bytes(pdf_bytes), file_name=f"{secilen_pdf_sube}.pdf")
+                    st.download_button(f"📥 {secilen_pdf_sube.replace('/', '_')}_Formlar.pdf İndir", data=bytes(pdf_bytes), file_name=f"{secilen_pdf_sube.replace('/', '_')}_Formlar.pdf")
 
+        # --- SUB TAB 4: SORU VE e-OKUL YÖNETİMİ ---
         with sub_tab4:
-            st.markdown("#### e-Okul Excel Listesi Yükle")
-            uploaded_file = st.file_uploader("Excel Yükle", type=["xls", "xlsx"])
-            if uploaded_file and st.button("Veritabanına İşle"):
-                toplam = parse_and_save_eokul(uploaded_file)
-                st.success(f"✅ {toplam} öğrenci aktarıldı!")
+            st.markdown("### 🛠️ Sistem Yönetim Paneli")
+            
+            with st.expander("📥 e-Okul Excel Listesi Yükle / Güncelle", expanded=True):
+                uploaded_file = st.file_uploader("e-Okul'dan aldığınız Sinif_Listesi.xls/xlsx dosyasını seçin:", type=["xls", "xlsx"])
+                if uploaded_file and st.button("Veritabanına İşle"):
+                    toplam = parse_and_save_eokul(uploaded_file)
+                    st.success(f"✅ {toplam} öğrenci başarıyla Google Sheets veritabanına aktarıldı!")
+                    st.rerun()
+
+            st.divider()
+            st.markdown("### 📝 Form Sorularını Yönet (CRUD)")
+            
+            q_islem = st.radio("Yapmak istediğiniz işlem:", ["Yeni Soru Ekle", "Mevcut Soruyu Düzenle / Sil"], horizontal=True)
+            
+            if q_islem == "Yeni Soru Ekle":
+                with st.form("yeni_soru_form"):
+                    y_metin = st.text_input("Soru Metni:")
+                    y_tip = st.selectbox("Soru Tipi:", ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"])
+                    y_secenekler = st.text_input("Seçenekler (Çoktan seçmeli veya çoklu seçim ise virgülle ayırın):", help="Örn: EVET,HAYIR veya DİYABET,ASTIM,YOK")
+                    y_sira = st.number_input("Soru Sırası:", min_value=1, value=len(df_q) + 1 if not df_q.empty else 1)
+                    
+                    # Parent-Child seçimi
+                    parent_opts = {"Yok (Ana Soru)": 0}
+                    if not df_q.empty:
+                        for _, q_item in df_q.iterrows():
+                            parent_opts[f"ID:{q_item['id']} - {q_item['soru_metni']}"] = q_item['id']
+                    
+                    y_parent_sel = st.selectbox("Bağlı Olduğu Üst Soru (Şartlı Gösterim):", list(parent_opts.keys()))
+                    y_parent_val = st.text_input("Üst Sorunun Hangi Seçeneğinde Bu Soru Görünsün?:", help="Örn: DİĞER")
+                    
+                    if st.form_submit_button("➕ Soruyu Kaydet"):
+                        if y_metin:
+                            new_id = int(df_q['id'].max() + 1) if not df_q.empty and 'id' in df_q.columns else 1
+                            new_q = {
+                                "id": new_id,
+                                "soru_metni": y_metin,
+                                "soru_tipi": y_tip,
+                                "secenekler": y_secenekler,
+                                "sira": y_sira,
+                                "bagli_parent_id": parent_opts[y_parent_sel],
+                                "bagli_parent_deger": y_parent_val
+                            }
+                            df_q_updated = pd.concat([df_q, pd.DataFrame([new_q])], ignore_index=True)
+                            save_data("sorular", df_q_updated)
+                            st.success("✅ Yeni soru kaydedildi!")
+                            st.rerun()
+                        else:
+                            st.error("Lütfen soru metnini boş bırakmayın.")
+                            
+            elif q_islem == "Mevcut Soruyu Düzenle / Sil":
+                if not df_q.empty:
+                    q_dict = {f"ID:{r['id']} - {r['soru_metni']}": r['id'] for _, r in df_q.iterrows()}
+                    secilen_q_label = st.selectbox("Düzenlenecek Soruyu Seçin:", list(q_dict.keys()))
+                    secilen_q_id = q_dict[secilen_q_label]
+                    q_row = df_q[df_q['id'] == secilen_q_id].iloc[0]
+                    
+                    with st.form("duzenle_soru_form"):
+                        d_metin = st.text_input("Soru Metni:", value=str(q_row['soru_metni']))
+                        d_tip = st.selectbox("Soru Tipi:", ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"], index=["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"].index(q_row['soru_tipi']) if q_row['soru_tipi'] in ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"] else 0)
+                        d_secenekler = st.text_input("Seçenekler:", value=str(q_row['secenekler']) if pd.notna(q_row['secenekler']) else "")
+                        d_sira = st.number_input("Soru Sırası:", value=int(q_row['sira']) if pd.notna(q_row['sira']) else 1)
+                        
+                        btn_col1, btn_col2 = st.columns(2)
+                        guncelle = btn_col1.form_submit_button("💾 Güncelle")
+                        sil = btn_col2.form_submit_button("🗑️ Soruyu Sil", type="primary")
+                        
+                        if guncelle:
+                            df_q.loc[df_q['id'] == secilen_q_id, ['soru_metni', 'soru_tipi', 'secenekler', 'sira']] = [d_metin, d_tip, d_secenekler, d_sira]
+                            save_data("sorular", df_q)
+                            st.success("✅ Soru güncellendi!")
+                            st.rerun()
+                            
+                        if sil:
+                            df_q_updated = df_q[df_q['id'] != secilen_q_id]
+                            save_data("sorular", df_q_updated)
+                            st.success("🗑️ Soru silindi!")
+                            st.rerun()
+                else:
+                    st.info("Düzenlenecek soru bulunamadı.")
