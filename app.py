@@ -181,9 +181,9 @@ with tab1:
     if not df_questions.empty and "sira" in df_questions.columns:
         df_questions = df_questions.sort_values(by=["sira", "id"])
 
-    if df_students.empty:
+    if df_students.empty or "numara" not in df_students.columns:
         st.info("Sistemde henüz öğrenci listesi tanımlı değil. Lütfen Yönetim Paneli'nden e-Okul listesi yükleyin.")
-    elif df_questions.empty:
+    elif df_questions.empty or "id" not in df_questions.columns:
         st.warning("Formda henüz soru tanımlanmamış.")
     else:
         siniflar = sorted(df_students["sinif"].astype(str).unique(), key=sort_sinif_sube_key)
@@ -203,9 +203,10 @@ with tab1:
                     secilen_no = str(secilen_ogrenci.split(" - ")[0])
                     
                     df_yanitlar = get_data("yanitlar")
-                    mevcut_yanit = pd.DataFrame()
-                    if not df_yanitlar.empty and "numara" in df_yanitlar.columns:
-                        mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no]
+                    if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
+                        df_yanitlar = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
+                    
+                    mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
                     
                     can_submit, is_update = True, False
                     eski_cevaplar = {}
@@ -300,7 +301,7 @@ with tab1:
                                 tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 json_data = json.dumps(st.session_state["answers"], ensure_ascii=False)
                                 
-                                if df_yanitlar.empty:
+                                if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
                                     df_yanitlar = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
                                 
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
@@ -322,8 +323,18 @@ with tab2:
         df_y = get_data("yanitlar")
         df_q = get_data("sorular")
         
-        if not df_q.empty and "sira" in df_q.columns: 
-            df_q = df_q.sort_values(by=["sira", "id"])
+        # Tablo sütun güvenlik önlemleri
+        if df_o.empty or "numara" not in df_o.columns:
+            df_o = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
+            
+        if df_y.empty or "numara" not in df_y.columns:
+            df_y = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
+            
+        if df_q.empty or "id" not in df_q.columns:
+            df_q = pd.DataFrame(columns=["id", "soru_metni", "soru_tipi", "secenekler", "sira", "bagli_parent_id", "bagli_parent_deger"])
+        else:
+            if "sira" in df_q.columns: 
+                df_q = df_q.sort_values(by=["sira", "id"])
         
         merged_all = pd.merge(df_o, df_y, on='numara', how='left') if not df_o.empty else pd.DataFrame()
         if not merged_all.empty:
@@ -362,7 +373,7 @@ with tab2:
                     doldurmayanlar = merged_all[merged_all['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
                     st.dataframe(doldurmayanlar, use_container_width=True)
             else:
-                st.info("Sistemde henüz öğrenci verisi yok.")
+                st.info("Sistemde henüz öğrenci verisi yok. Lütfen 'Soru & e-Okul Yönetimi' sekmesinden e-Okul Excel dosyasını yükleyin.")
 
         # --- SUB TAB 2: EXCEL RAPORU ---
         with sub_tab2:
@@ -389,17 +400,21 @@ with tab2:
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     pd.DataFrame(excel_rows).to_excel(writer, index=False)
                 st.download_button("📊 TÜM VERİLERİ EXCEL OLARAK İNDİR", data=output.getvalue(), file_name="OKUL_BILGI_FORMU_RAPOR.xlsx")
+            else:
+                st.info("Rapor oluşturmak için yeterli veri bulunamadı.")
 
         # --- SUB TAB 3: PDF DÖKÜMLERİ ---
         with sub_tab3:
             st.markdown("### 📄 Sınıf Bazlı PDF Dökümleri")
-            if not merged_all.empty and not df_q.empty:
+            if not merged_all.empty and not df_q.empty and 'sinif_sube' in merged_all.columns:
                 tum_subeler = sorted(merged_all['sinif_sube'].unique().tolist(), key=sort_sinif_sube_key)
                 secilen_pdf_sube = st.selectbox("Sınıf Seçin:", tum_subeler)
                 if st.button("PDF Raporu Oluştur"):
                     sube_students = merged_all[merged_all['sinif_sube'] == secilen_pdf_sube]
                     pdf_bytes = generate_class_pdf(sube_students, df_q, secilen_pdf_sube)
                     st.download_button(f"📥 {secilen_pdf_sube.replace('/', '_')}_Formlar.pdf İndir", data=bytes(pdf_bytes), file_name=f"{secilen_pdf_sube.replace('/', '_')}_Formlar.pdf")
+            else:
+                st.info("PDF oluşturmak için öğrenci ve soru verisi gereklidir.")
 
         # --- SUB TAB 4: SORU VE e-OKUL YÖNETİMİ ---
         with sub_tab4:
@@ -424,9 +439,8 @@ with tab2:
                     y_secenekler = st.text_input("Seçenekler (Çoktan seçmeli veya çoklu seçim ise virgülle ayırın):", help="Örn: EVET,HAYIR veya DİYABET,ASTIM,YOK")
                     y_sira = st.number_input("Soru Sırası:", min_value=1, value=len(df_q) + 1 if not df_q.empty else 1)
                     
-                    # Parent-Child seçimi
                     parent_opts = {"Yok (Ana Soru)": 0}
-                    if not df_q.empty:
+                    if not df_q.empty and 'id' in df_q.columns:
                         for _, q_item in df_q.iterrows():
                             parent_opts[f"ID:{q_item['id']} - {q_item['soru_metni']}"] = q_item['id']
                     
@@ -435,7 +449,7 @@ with tab2:
                     
                     if st.form_submit_button("➕ Soruyu Kaydet"):
                         if y_metin:
-                            new_id = int(df_q['id'].max() + 1) if not df_q.empty and 'id' in df_q.columns else 1
+                            new_id = int(df_q['id'].max() + 1) if not df_q.empty and 'id' in df_q.columns and pd.notna(df_q['id'].max()) else 1
                             new_q = {
                                 "id": new_id,
                                 "soru_metni": y_metin,
@@ -453,7 +467,7 @@ with tab2:
                             st.error("Lütfen soru metnini boş bırakmayın.")
                             
             elif q_islem == "Mevcut Soruyu Düzenle / Sil":
-                if not df_q.empty:
+                if not df_q.empty and 'id' in df_q.columns:
                     q_dict = {f"ID:{r['id']} - {r['soru_metni']}": r['id'] for _, r in df_q.iterrows()}
                     secilen_q_label = st.selectbox("Düzenlenecek Soruyu Seçin:", list(q_dict.keys()))
                     secilen_q_id = q_dict[secilen_q_label]
