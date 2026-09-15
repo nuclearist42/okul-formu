@@ -1,5 +1,6 @@
 streamlit
 pandas
 openpyxl
+xlrd
 fpdf2
 st-gsheets-connection
