@@ -232,51 +232,159 @@ def parse_and_save_eokul(file_buffer):
     return len(all_students)
 
 def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=False) # 1 sayfaya tam sığdırmak için
 
     for idx, st_row in df_sube_merged.iterrows():
         pdf.add_page()
-        pdf.set_font("Helvetica", 'B', 13)
-        pdf.cell(0, 7, tr_fix("KONYA LISESI OGRENCI BILGI FORMU"), ln=True, align="C")
-        pdf.set_font("Helvetica", 'I', 9)
-        pdf.cell(0, 5, tr_fix(f"Sinif / Sube: {sinif_sube_adi}  |  Sinif Ogretmeni: {st_row['ogretmen']}"), ln=True, align="C")
-        pdf.ln(4)
         
-        pdf.set_font("Helvetica", 'B', 10)
-        pdf.set_fill_color(220, 230, 242)
-        pdf.cell(0, 7, tr_fix(f" OGR. NO: {st_row['numara']}  |  ADI SOYADI: {st_row['ad_soyad']}  |  DURUM: {st_row['FORM DURUMU']}"), ln=True, fill=True)
-        pdf.ln(3)
-        
+        # Öğrenci yanıtlarını haritalandır
+        ans = {}
         if st_row['FORM DURUMU'] == "DOLDURDU":
-            st_answers_by_id = {}
             for _, q_item in questions_df.iterrows():
-                q_id_str = clean_val(q_item['id'])
-                q_title_str = q_item['soru_metni']
-                st_answers_by_id[q_id_str] = clean_val(st_row.get(q_title_str, ""))
+                q_id = clean_val(q_item['id'])
+                q_title = clean_val(q_item['soru_metni'])
+                ans[q_id] = clean_val(st_row.get(q_title, "-"))
+                ans[q_title] = clean_val(st_row.get(q_title, "-"))
 
-            for _, q in questions_df.iterrows():
-                q_title = q['soru_metni']
-                
-                if not is_question_visible(q, st_answers_by_id):
-                    continue
-                
-                q_ans = tr_fix(str(st_row.get(q_title, "-")).strip())
-                if q_ans.lower() in ["nan", "none", ""]: q_ans = "-"
-                
-                pdf.set_font("Helvetica", 'B', 8)
-                pdf.cell(75, 5, f"{tr_fix(q_title)}:", border=0)
-                pdf.set_font("Helvetica", size=8)
-                pdf.cell(0, 5, f" {q_ans}", border=0, ln=True)
-            
-            pdf.ln(10)
+        def get_v(key_or_id):
+            v = ans.get(key_or_id, "-")
+            return tr_fix(v if v != "" else "-")
+
+        # --- YARDIMCI ÇİZİM FONKSİYONLARI ---
+        def sec_header(title):
             pdf.set_font("Helvetica", 'B', 8)
-            pdf.cell(95, 5, tr_fix("Sinif Rehber Ogretmeni Imza:"), align="L")
-            pdf.cell(95, 5, tr_fix("Veli Imza:"), align="R", ln=True)
-        else:
-            pdf.set_font("Helvetica", 'I', 10)
-            pdf.cell(0, 10, tr_fix("Bu ogrenci henüz formu doldurmamistir."), ln=True)
-            
+            pdf.set_fill_color(220, 220, 220)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(190, 5, tr_fix(title), border=1, ln=True, align="L", fill=True)
+
+        def draw_cell(w, h, txt, bold=False, align="L", fill=False):
+            pdf.set_font("Helvetica", 'B' if bold else '', 7)
+            pdf.cell(w, h, tr_fix(str(txt)), border=1, align=align, fill=fill)
+
+        # --- SAYFA BAŞLIĞI ---
+        pdf.set_font("Helvetica", 'B', 10)
+        pdf.cell(190, 6, tr_fix("2025-2026 ÖĞRETİM YILI KONYA LİSESİ ÖĞRENCİ BİLGİ FORMU"), border=1, ln=True, align="C")
+        pdf.ln(1)
+
+        # --- 1. ÖĞRENCİ BİLGİLERİ ---
+        sec_header("ÖĞRENCİ BİLGİLERİ")
+        draw_cell(50, 4, "ADI SOYADI", bold=True, fill=True)
+        draw_cell(20, 4, "SINIFI", bold=True, fill=True)
+        draw_cell(30, 4, "OKUL NO", bold=True, fill=True)
+        draw_cell(45, 4, "YABANCI DİLİ", bold=True, fill=True)
+        draw_cell(45, 4, "VELİSİ", bold=True, fill=True)
+        pdf.ln()
+        
+        draw_cell(50, 5, st_row.get('ad_soyad', '-'), bold=True)
+        draw_cell(20, 5, sinif_sube_adi, bold=True)
+        draw_cell(30, 5, st_row.get('numara', '-'), bold=True)
+        draw_cell(45, 5, get_v("YABANCI DİLİ"))
+        draw_cell(45, 5, get_v("VELİSİ"))
+        pdf.ln()
+        pdf.ln(1)
+
+        # --- 2. VELİSİ ANNE BABA HARİCİNDE İSE ---
+        sec_header("VELİSİ ANNE BABA HARİCİNDE İSE")
+        draw_cell(50, 4, "VELİ TC KİMLİK NO", bold=True, fill=True)
+        draw_cell(80, 4, "VELİ ADI SOYADI", bold=True, fill=True)
+        draw_cell(60, 4, "VELİ YAKINLIK DERECESİ", bold=True, fill=True)
+        pdf.ln()
+        draw_cell(50, 4, get_v("VELİ TC KİMLİK NO"))
+        draw_cell(80, 4, get_v("VELİ ADI SOYADI"))
+        draw_cell(60, 4, get_v("VELİ YAKINLIK DERECESİ"))
+        pdf.ln()
+        pdf.ln(1)
+
+        # --- 3. ÖĞRENCİ GENEL BİLGİLERİ ---
+        sec_header("ÖĞRENCİ GENEL BİLGİLERİ")
+        
+        genel_grid = [
+            [("Kiminle oturuyor?", True), (get_v("Kiminle oturuyor?"), False), ("Bir işte çalışıyor mu?", True), (get_v("Bir işte çalışıyor mu?"), False), ("Geçirdiği hastalık", True), (get_v("Geçirdiği hastalık"), False)],
+            [("Oturduğu ev:", True), (get_v("Oturduğu ev:"), False), ("Aile dışında kalan var mı?", True), (get_v("Aile dışında kalan var mı?"), False), ("Sürekli hastalığı", True), (get_v("Sürekli hastalığı"), False)],
+            [("Kendi odası var mı?", True), (get_v("Kendi odası var mı?"), False), ("Geçirdiği kaza", True), (get_v("Geçirdiği kaza"), False), ("Sürekli kullandığı ilaç", True), (get_v("Sürekli kullandığı ilaç"), False)],
+            [("Ev ne ile ısınıyor?", True), (get_v("Ev ne ile ısınıyor?"), False), ("Geçirdiği Ameliyat", True), (get_v("Geçirdiği Ameliyat"), False), ("Kardeş sayısı", True), (get_v("Kardeş sayısı"), False)],
+            [("Okula nasıl geliyor?", True), (get_v("Okula nasıl geliyor?"), False), ("Kullandığı cihaz, protez", True), (get_v("Kullandığı cihaz, protez"), False), ("Aile gelir durumu", True), (get_v("Aile gelir durumu"), False)],
+        ]
+        
+        for row in genel_grid:
+            for item in row:
+                # Genişlikler: Etiket 38mm, Değer 25.3mm x 3 = 190mm
+                w = 38 if item[1] else 25.3
+                draw_cell(w, 4.5, item[0], bold=item[1], fill=item[1])
+            pdf.ln()
+        pdf.ln(1)
+
+        # --- 4. FİZİKSEL VE ÖZEL DURUM ---
+        pdf.set_font("Helvetica", 'B', 8)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(95, 4, tr_fix("ÖĞRENCİ FİZİKSEL DURUMU"), border=1, fill=True)
+        pdf.cell(95, 4, tr_fix("ÖĞRENCİ ÖZEL DURUMU"), border=1, ln=True, fill=True)
+
+        # Satır 1
+        draw_cell(20, 4, "Boy", bold=True, fill=True)
+        draw_cell(25, 4, get_v("Boy"))
+        draw_cell(15, 4, "Kilo", bold=True, fill=True)
+        draw_cell(35, 4, get_v("Kilo"))
+        draw_cell(45, 4, "ANNE-BABA", bold=True, fill=True)
+        draw_cell(50, 4, get_v("ANNE-BABA"))
+        pdf.ln()
+
+        # Satır 2
+        draw_cell(20, 4, "Kan grubu", bold=True, fill=True)
+        draw_cell(75, 4, get_v("Kan grubu"))
+        draw_cell(45, 4, "Velayet kimde? (gerekli ise)", bold=True, fill=True)
+        draw_cell(50, 4, get_v("Velayet kimde?"))
+        pdf.ln()
+        pdf.ln(1)
+
+        # --- 5. BABA BİLGİLERİ ---
+        sec_header("BABA BİLGİLERİ")
+        baba_grid = [
+            [("ADI SOYADI", get_v("BABA ADI SOYADI")), ("SÜREKLİ HASTALIĞI", get_v("BABA SÜREKLİ HASTALIĞI"))],
+            [("SAĞ/ÖLÜ", get_v("BABA SAĞ/ÖLÜ")), ("ENGEL DURUMU", get_v("BABA ENGEL DURUMU"))],
+            [("ÖĞRENİM DURUMU", get_v("BABA ÖĞRENİM DURUMU")), ("E-POSTA ADRESİ", get_v("BABA E-POSTA ADRESİ"))],
+            [("MESLEĞİ", get_v("BABA MESLEĞİ")), ("TELEFON NO", get_v("BABA TELEFON NO"))],
+        ]
+        for row in baba_grid:
+            draw_cell(35, 4, row[0][0], bold=True, fill=True)
+            draw_cell(60, 4, row[0][1])
+            draw_cell(35, 4, row[1][0], bold=True, fill=True)
+            draw_cell(60, 4, row[1][1])
+            pdf.ln()
+        pdf.ln(1)
+
+        # --- 6. ANNE BİLGİLERİ ---
+        sec_header("ANNE BİLGİLERİ")
+        anne_grid = [
+            [("ADI SOYADI", get_v("ANNE ADI SOYADI")), ("SÜREKLİ HASTALIĞI", get_v("ANNE SÜREKLİ HASTALIĞI"))],
+            [("SAĞ/ÖLÜ", get_v("ANNE SAĞ/ÖLÜ")), ("ENGEL DURUMU", get_v("ANNE ENGEL DURUMU"))],
+            [("ÖĞRENİM DURUMU", get_v("ANNE ÖĞRENİM DURUMU")), ("E-POSTA ADRESİ", get_v("ANNE E-POSTA ADRESİ"))],
+            [("MESLEĞİ", get_v("ANNE MESLEĞİ")), ("TELEFON NO", get_v("ANNE TELEFON NO"))],
+        ]
+        for row in anne_grid:
+            draw_cell(35, 4, row[0][0], bold=True, fill=True)
+            draw_cell(60, 4, row[0][1])
+            draw_cell(35, 4, row[1][0], bold=True, fill=True)
+            draw_cell(60, 4, row[1][1])
+            pdf.ln()
+        pdf.ln(3)
+
+        # --- ALT İMZA VE ONAY BÖLÜMÜ ---
+        pdf.set_font("Helvetica", 'B', 8)
+        pdf.cell(95, 4, tr_fix(f"Sınıf Öğretmeni: {st_row.get('ogretmen', '')}"), border=0)
+        pdf.cell(95, 4, tr_fix("BİLGİLERİN DOĞRULUĞU TARAFIMDAN KONTROL EDİLMİŞTİR."), border=0, ln=True)
+        
+        pdf.set_font("Helvetica", '', 8)
+        pdf.cell(95, 4, "", border=0)
+        pdf.cell(95, 4, tr_fix("VELİ İMZA:"), border=0, ln=True)
+        
+        pdf.cell(95, 4, "", border=0)
+        pdf.cell(95, 4, tr_fix("VELİ ADI SOYADI:"), border=0, ln=True)
+        
+        pdf.cell(95, 4, "", border=0)
+        pdf.cell(95, 4, tr_fix("../2025"), border=0, ln=True)
+
     return pdf.output()
 
 # ==========================================
