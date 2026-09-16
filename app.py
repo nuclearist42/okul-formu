@@ -214,9 +214,17 @@ def parse_and_save_eokul(file_buffer):
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
-st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
+st.title("Konya Lisesi Öğrenci Bilgi Formu")
 
-tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
+st.markdown("""
+ORTAÖĞRETİM KURUMLARINA YERLEŞTİRME İŞLEMİNDE ÖĞRENCİLERİN E-OKUL BİLGİLERİ KULLANILMAKTADIR. BU NEDENLE ÖĞRENCİLERE AİT BİLGİLERİN TAM VE GÜNCEL OLMASI GEREKMEKTEDİR. AİLE VE ÖĞRENCİ İLE İLGİLİ TÜM GELİŞME VE DEĞİŞİKLİKLERİN ZAMANINDA OKUL İDARESİNE BİLDİRİLMESİ GEREKMEKTEDİR. ELEKTRONİK FORMUN İLERLEYİŞİ VERİLEN CEVAPLARA GÖRE OLACAĞI İÇİN BİLGİLERİN DOĞRU VE GÜNCEL OLMASI ÖNEM ARZ ETMEKTEDİR.
+
+BİLGİ GİRİŞLERİ TAMAMLANINCA OKUL REHBERLİK SERVİSİ TARAFINDAN ÇIKTI ALINARAK İMZALAMASI İÇİN VELİLERE ULAŞTIRILACAKTIR.
+
+FORM BİLGİLERİ YALNIZCA OKUL İDARESİ VE REHBERLİK SERVİSİ TARAFINDAN GÖRÜNTÜLENEBİLECEKTİR. ÜÇÜNCÜ KİŞİLERLE PAYLAŞILMAMAKTADIR.
+""")
+
+tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Panel"])
 
 # --- TAB 1: ÖĞRENCİ FORMU ---
 with tab1:
@@ -376,10 +384,10 @@ with tab1:
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
 with tab2:
-    st.subheader("Yönetici & Öğretmen Paneli")
+    st.subheader("Panel")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
-    if sifre == "admin123":
+    if sifre == "bettiyin":
         # Verileri yenile butonu sadece yönetici paneline alındı
         if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
             clear_all_caches()
