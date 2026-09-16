@@ -39,13 +39,22 @@ def clean_id(val):
 
 def tr_norm(text):
     """Metni Türkçe karakterlerden arındırıp büyük harfe çevirir ve temizler."""
-    if not text:
+    if pd.isna(text) or text is None:
         return ""
-    mapping = {'İ': 'I', 'ı': 'i', 'Ş': 'S', 'ş': 's', 'Ğ': 'G', 'ğ': 'g', 'Ü': 'U', 'ü': 'u', 'Ö': 'O', 'ö': 'o', 'Ç': 'C', 'ç': 'c'}
-    t = str(text)
-    for tr, en in mapping.items():
-        t = t.replace(tr, en)
-    return t.strip().upper()
+    t = str(text).strip()
+    mapping = {
+        'i': 'I', 'İ': 'I', 'ı': 'I', 'I': 'I',
+        'ş': 'S', 'Ş': 'S',
+        'ğ': 'G', 'Ğ': 'G',
+        'ü': 'U', 'Ü': 'U',
+        'ö': 'O', 'Ö': 'O',
+        'ç': 'C', 'Ç': 'C'
+    }
+    res = []
+    for ch in t:
+        res.append(mapping.get(ch, ch.upper()))
+    norm_str = "".join(res)
+    return re.sub(r'[^A-Z0-9]', '', norm_str)
 
 def get_ans_for_id(pid, answers_map):
     """Önce canlı Streamlit widget durumuna, yoksa answers haritasına bakar."""
@@ -69,7 +78,7 @@ def get_ans_for_id(pid, answers_map):
 def is_question_visible(q_row, answers_map):
     """
     Sorunun gösterilip gösterilmeyeceğini denetler.
-    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '3,4' ve bagli_parent_deger = 'SAĞ,SAĞ' veya 'SAĞ').
+    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '33,44' ve bagli_parent_deger = 'SAĞ,SAĞ' veya 'SAĞ').
     """
     parent_id_str = clean_id(q_row.get('bagli_parent_id'))
     parent_target_str = clean_val(q_row.get('bagli_parent_deger'), default="")
@@ -84,28 +93,32 @@ def is_question_visible(q_row, answers_map):
         return True
         
     for idx, pid in enumerate(p_ids):
-        # Eğer hedef sayısı ID sayısından azsa ilk hedefi varsayılan al (Örn: tek 'SAĞ' yazılmışsa hepsi için geçerli say)
         target = p_targets[idx] if idx < len(p_targets) else (p_targets[0] if p_targets else "")
         target_norm = tr_norm(target)
         
-        if not target_norm:
-            continue
-            
         user_ans = get_ans_for_id(pid, answers_map)
         user_ans_norm = tr_norm(user_ans)
         
         if not user_ans_norm:
             return False
             
-        # Esnek eşleşme: Eşitlik veya metin içi kapsama kontrolü (Örn: 'SAĞ' vs 'SAĞ (HAYATTA)')
-        if target_norm != user_ans_norm and target_norm not in user_ans_norm and user_ans_norm not in target_norm:
-            return False
-            
+        if target_norm:
+            match = (
+                target_norm == user_ans_norm or
+                target_norm in user_ans_norm or
+                user_ans_norm in target_norm or
+                (target_norm in ["SAG", "HAYATTA"] and user_ans_norm in ["SAG", "HAYATTA"])
+            )
+            if not match:
+                return False
+                
     return True
 
 def get_data(worksheet_name):
     try:
-        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
+        # Sorular ve Yanıtlar anında güncellensin (ttl=0), Öğrenci listesi önbellekte dursun (ttl=600)
+        ttl_val = 600 if worksheet_name == "ogrenciler" else 0
+        df = conn_gs.read(worksheet=worksheet_name, ttl=ttl_val)
         if df is not None and not df.empty:
             df = df.astype(object)
             for col in df.columns:
@@ -533,10 +546,32 @@ with tab2:
             st.divider()
             st.markdown("### 📝 Form Sorularını Yönet (CRUD)")
             
+            # Soru haritası hazırlığı
+            q_id_to_title = {}
+            if not df_q.empty and 'id' in df_q.columns:
+                for _, q_item in df_q.iterrows():
+                    c_id = clean_val(q_item['id'])
+                    if c_id and c_id != "0":
+                        q_id_to_title[c_id] = q_item['soru_metni']
+
             if not df_q.empty:
-                st.markdown("#### 📋 Mevcut Soru Listesi ve ID Numaraları")
-                disp_cols = [c for c in ['id', 'sira', 'soru_metni', 'soru_tipi', 'secenekler', 'bagli_parent_id', 'bagli_parent_deger'] if c in df_q.columns]
-                st.dataframe(df_q[disp_cols], use_container_width=True)
+                st.markdown("#### 📋 Mevcut Soru Listesi ve Şartlı Bağlantı Kontrolü")
+                
+                # Tabloda açıkça göstereceğimiz kopyayı oluşturalım
+                df_q_disp = df_q.copy()
+                
+                def format_parents_summary(row):
+                    p_id_str = clean_id(row.get('bagli_parent_id'))
+                    if p_id_str in ["0", "", "nan"]:
+                        return "Ana Soru (Her Zaman Görünür)"
+                    ids = p_id_str.split(',')
+                    titles = [f"[ID:{i}] {q_id_to_title.get(i, 'Bilinmeyen Soru')}" for i in ids]
+                    return ", ".join(titles)
+
+                df_q_disp['Bağlı Olduğu Üst Soru(lar)'] = df_q_disp.apply(format_parents_summary, axis=1)
+                
+                disp_cols = [c for c in ['id', 'sira', 'soru_metni', 'soru_tipi', 'secenekler', 'Bağlı Olduğu Üst Soru(lar)', 'bagli_parent_deger'] if c in df_q_disp.columns]
+                st.dataframe(df_q_disp[disp_cols], use_container_width=True)
 
             q_islem = st.radio("Yapmak istediğiniz işlem:", ["Yeni Soru Ekle", "Mevcut Soruyu Düzenle / Sil"], horizontal=True)
             
