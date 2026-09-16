@@ -434,26 +434,6 @@ with tab1:
                                 save_data("yanitlar", df_yanitlar)
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
-                        # --- CANLI TEŞHİS / HATA AYIKLAMA KUTUSU (DEBUG) ---
-                        with st.expander("🔍 Şartlı Soru Canlı Kontrol Paneli (Teşhis)", expanded=False):
-                            st.write("Aşağıda her bir sorunun canlı görünürlük durumunu ve sistemin okuduğu değerleri görebilirsiniz:")
-                            debug_list = []
-                            for _, q in df_questions.iterrows():
-                                q_id_clean = clean_val(q['id'])
-                                p_id_clean = clean_id(q.get('bagli_parent_id'))
-                                p_val_clean = clean_val(q.get('bagli_parent_deger'))
-                                vis = is_question_visible(q, st.session_state.get("answers", {}))
-                                cur_ans = get_ans_for_id(q_id_clean, st.session_state.get("answers", {}))
-                                debug_list.append({
-                                    "Soru ID": q_id_clean,
-                                    "Soru Metni": q['soru_metni'],
-                                    "Bağlı Üst ID(ler)": p_id_clean,
-                                    "Beklenen Şart": p_val_clean,
-                                    "Ekranda Seçilen Yanıt": cur_ans,
-                                    "Görünür Mü?": "✅ EVET" if vis else "❌ HAYIR"
-                                })
-                            st.dataframe(pd.DataFrame(debug_list), use_container_width=True)
-
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
 with tab2:
     st.subheader("Yönetici & Öğretmen Paneli")
