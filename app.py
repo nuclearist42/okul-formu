@@ -380,6 +380,40 @@ with tab1:
                                     df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
                                 
                                 save_data("yanitlar", df_yanitlar)
+                                # --- OTOMATİK İSTATİSTİK VE EKSİK GÜNCELLEME ---
+                                try:
+                                    if not df_students.empty:
+                                        if not df_yanitlar.empty:
+                                            cols_to_use = ['numara'] + [c for c in df_yanitlar.columns if c not in df_students.columns]
+                                            merged_auto = pd.merge(df_students, df_yanitlar[cols_to_use], on='numara', how='left')
+                                        else:
+                                            merged_auto = df_students.copy()
+                                        
+                                        merged_auto['FORM DURUMU'] = merged_auto.get('tarih', pd.Series([None]*len(merged_auto))).apply(
+                                            lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI"
+                                        )
+                                        merged_auto['sinif_sube'] = merged_auto['sinif'].astype(str) + "/" + merged_auto['sube'].astype(str)
+                                        
+                                        # İstatistikleri hesapla ve gönder
+                                        stats_df = merged_auto.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
+                                        if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
+                                        if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
+                                        stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
+                                        stats_df['TAMAMLANMA %'] = ((stats_df['DOLDURDU'] / stats_df['TOPLAM']) * 100).round(1)
+                                        
+                                        stats_to_export = stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'TAMAMLANMA %']].reset_index()
+                                        conn_gs.update(worksheet="istatistik", data=stats_to_export)
+                                        
+                                        # Doldurmayanları hesapla ve gönder
+                                        doldurmayanlar_df = merged_auto[merged_auto['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
+                                        conn_gs.update(worksheet="doldurmayanlar", data=doldurmayanlar_df)
+                                        
+                                        clear_all_caches()
+                                except Exception:
+                                    pass
+                                # ---------------------------------------------
+
+                                
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
