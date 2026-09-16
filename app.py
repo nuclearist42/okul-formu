@@ -24,7 +24,6 @@ def clean_val(val, default=""):
     return val_str
 
 def clean_id(val):
-    """Herhangi bir ID veya virgüllü ID stringini temizler: '33.0, 44.0' -> '33,44'"""
     if pd.isna(val) or val is None:
         return "0"
     s = str(val).strip()
@@ -38,7 +37,6 @@ def clean_id(val):
     return ",".join(parts) if parts else "0"
 
 def tr_norm(text):
-    """Metni Türkçe karakterlerden arındırıp büyük harfe çevirir ve temizler."""
     if pd.isna(text) or text is None:
         return ""
     t = str(text).strip()
@@ -50,14 +48,11 @@ def tr_norm(text):
         'ö': 'O', 'Ö': 'O',
         'ç': 'C', 'Ç': 'C'
     }
-    res = []
-    for ch in t:
-        res.append(mapping.get(ch, ch.upper()))
+    res = [mapping.get(ch, ch.upper()) for ch in t]
     norm_str = "".join(res)
     return re.sub(r'[^A-Z0-9]', '', norm_str)
 
 def get_ans_for_id(pid, answers_map):
-    """Önce canlı Streamlit widget durumuna, yoksa answers haritasına bakar."""
     pid_str = clean_val(pid)
     widget_key = f"widget_{pid_str}"
     
@@ -76,10 +71,6 @@ def get_ans_for_id(pid, answers_map):
     return ""
 
 def is_question_visible(q_row, answers_map):
-    """
-    Sorunun gösterilip gösterilmeyeceğini denetler.
-    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '33,44' ve bagli_parent_deger = 'SAĞ,SAĞ' veya 'SAĞ').
-    """
     parent_id_str = clean_id(q_row.get('bagli_parent_id'))
     parent_target_str = clean_val(q_row.get('bagli_parent_deger'), default="")
     
@@ -116,9 +107,7 @@ def is_question_visible(q_row, answers_map):
 
 def get_data(worksheet_name):
     try:
-        # Sorular ve Yanıtlar anında güncellensin (ttl=0), Öğrenci listesi önbellekte dursun (ttl=600)
-        ttl_val = 600 if worksheet_name == "ogrenciler" else 0
-        df = conn_gs.read(worksheet=worksheet_name, ttl=ttl_val)
+        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None and not df.empty:
             df = df.astype(object)
             for col in df.columns:
@@ -425,6 +414,26 @@ with tab1:
                                 save_data("yanitlar", df_yanitlar)
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
+                        # --- CANLI TEŞHİS / HATA AYIKLAMA KUTUSU (DEBUG) ---
+                        with st.expander("🔍 Şartlı Soru Canlı Kontrol Paneli (Teşhis)", expanded=False):
+                            st.write("Aşağıda her bir sorunun canlı görünürlük durumunu ve sistemin okuduğu değerleri görebilirsiniz:")
+                            debug_list = []
+                            for _, q in df_questions.iterrows():
+                                q_id_clean = clean_val(q['id'])
+                                p_id_clean = clean_id(q.get('bagli_parent_id'))
+                                p_val_clean = clean_val(q.get('bagli_parent_deger'))
+                                vis = is_question_visible(q, st.session_state.get("answers", {}))
+                                cur_ans = get_ans_for_id(q_id_clean, st.session_state.get("answers", {}))
+                                debug_list.append({
+                                    "Soru ID": q_id_clean,
+                                    "Soru Metni": q['soru_metni'],
+                                    "Bağlı Üst ID(ler)": p_id_clean,
+                                    "Beklenen Şart": p_val_clean,
+                                    "Ekranda Seçilen Yanıt": cur_ans,
+                                    "Görünür Mü?": "✅ EVET" if vis else "❌ HAYIR"
+                                })
+                            st.dataframe(pd.DataFrame(debug_list), use_container_width=True)
+
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
 with tab2:
     st.subheader("Yönetici & Öğretmen Paneli")
@@ -546,7 +555,6 @@ with tab2:
             st.divider()
             st.markdown("### 📝 Form Sorularını Yönet (CRUD)")
             
-            # Soru haritası hazırlığı
             q_id_to_title = {}
             if not df_q.empty and 'id' in df_q.columns:
                 for _, q_item in df_q.iterrows():
@@ -556,8 +564,6 @@ with tab2:
 
             if not df_q.empty:
                 st.markdown("#### 📋 Mevcut Soru Listesi ve Şartlı Bağlantı Kontrolü")
-                
-                # Tabloda açıkça göstereceğimiz kopyayı oluşturalım
                 df_q_disp = df_q.copy()
                 
                 def format_parents_summary(row):
@@ -569,7 +575,6 @@ with tab2:
                     return ", ".join(titles)
 
                 df_q_disp['Bağlı Olduğu Üst Soru(lar)'] = df_q_disp.apply(format_parents_summary, axis=1)
-                
                 disp_cols = [c for c in ['id', 'sira', 'soru_metni', 'soru_tipi', 'secenekler', 'Bağlı Olduğu Üst Soru(lar)', 'bagli_parent_deger'] if c in df_q_disp.columns]
                 st.dataframe(df_q_disp[disp_cols], use_container_width=True)
 
