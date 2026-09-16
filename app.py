@@ -33,7 +33,6 @@ def clean_id(val):
     s = str(val).strip()
     if s.lower() in ["nan", "none", "<na>", "", "0"]:
         return "0"
-    # Noktaları virgüle çevirerek Google Sheets float dönüşümünü nötrle
     s = s.replace('.', ',')
     parts = []
     for p in s.split(','):
@@ -112,10 +111,11 @@ def is_question_visible(q_row, answers_map):
                 
     return True
 
-def get_data(worksheet_name):
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_gsheet_cached(worksheet_name):
+    """Google Sheets verisini hızlı çalışan bellek hafızasında saklar."""
     try:
-        ttl_val = 600 if worksheet_name == "ogrenciler" else 0
-        df = conn_gs.read(worksheet=worksheet_name, ttl=ttl_val)
+        df = conn_gs.read(worksheet=worksheet_name, ttl=300)
         if df is not None and not df.empty:
             df = df.astype(object)
             for col in df.columns:
@@ -124,6 +124,18 @@ def get_data(worksheet_name):
         return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+
+def get_data(worksheet_name):
+    """Hafızadaki veriyi alır. Kota aşımı olsa bile önbellekteki veriyi korur."""
+    df = fetch_gsheet_cached(worksheet_name)
+    ss_key = f"backup_df_{worksheet_name}"
+    
+    if df is not None and not df.empty:
+        st.session_state[ss_key] = df
+    elif ss_key in st.session_state:
+        df = st.session_state[ss_key]
+        
+    return df.copy() if df is not None else pd.DataFrame()
 
 def save_data(worksheet_name, df):
     conn_gs.update(worksheet=worksheet_name, data=df)
