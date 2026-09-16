@@ -24,11 +24,17 @@ def clean_val(val, default=""):
     return val_str
 
 def clean_id(val):
+    """
+    Herhangi bir ID veya virgüllü/noktalı ID stringini temizler.
+    Google Sheets'in '33,44' değerini ondalıklı '33.44' yapması durumunu düzeltir.
+    """
     if pd.isna(val) or val is None:
         return "0"
     s = str(val).strip()
     if s.lower() in ["nan", "none", "<na>", "", "0"]:
         return "0"
+    # Noktaları virgüle çevirerek Google Sheets float dönüşümünü nötrle
+    s = s.replace('.', ',')
     parts = []
     for p in s.split(','):
         p_str = clean_val(p)
@@ -37,6 +43,7 @@ def clean_id(val):
     return ",".join(parts) if parts else "0"
 
 def tr_norm(text):
+    """Metni Türkçe karakterlerden arındırıp büyük harfe çevirir ve temizler."""
     if pd.isna(text) or text is None:
         return ""
     t = str(text).strip()
@@ -107,7 +114,8 @@ def is_question_visible(q_row, answers_map):
 
 def get_data(worksheet_name):
     try:
-        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
+        ttl_val = 600 if worksheet_name == "ogrenciler" else 0
+        df = conn_gs.read(worksheet=worksheet_name, ttl=ttl_val)
         if df is not None and not df.empty:
             df = df.astype(object)
             for col in df.columns:
@@ -617,7 +625,7 @@ with tab2:
                                 "soru_tipi": y_tip,
                                 "secenekler": y_secenekler,
                                 "sira": str(y_sira),
-                                "bagli_parent_id": y_p_ids,
+                                "bagli_parent_id": clean_id(y_p_ids),
                                 "bagli_parent_deger": clean_val(y_parent_val)
                             }
                             df_q_updated = pd.concat([df_q, pd.DataFrame([new_q])], ignore_index=True)
@@ -635,7 +643,7 @@ with tab2:
                         secilen_q_id = q_dict[secilen_q_label]
                         q_row = df_q[df_q['id'].apply(lambda x: clean_val(x)) == secilen_q_id].iloc[0]
                         
-                        cur_p_ids = [clean_val(x) for x in str(q_row.get('bagli_parent_id', '')).split(',') if clean_val(x) and clean_val(x) != "0"]
+                        cur_p_ids = [clean_val(x) for x in str(clean_id(q_row.get('bagli_parent_id'))).split(',') if clean_val(x) and clean_val(x) != "0"]
                         default_selected_parents = [k for k, v in parent_opts.items() if v in cur_p_ids]
                         
                         with st.form("duzenle_soru_form"):
@@ -667,7 +675,7 @@ with tab2:
                                     df_q.at[q_idx, 'soru_tipi'] = str(d_tip)
                                     df_q.at[q_idx, 'secenekler'] = str(d_secenekler)
                                     df_q.at[q_idx, 'sira'] = str(d_sira)
-                                    df_q.at[q_idx, 'bagli_parent_id'] = str(d_p_ids)
+                                    df_q.at[q_idx, 'bagli_parent_id'] = clean_id(d_p_ids)
                                     df_q.at[q_idx, 'bagli_parent_deger'] = str(d_parent_val)
                                     
                                     save_data("sorular", df_q)
