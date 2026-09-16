@@ -27,9 +27,10 @@ def get_data(worksheet_name):
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None and not df.empty:
-            for col in ["numara", "sinif", "sube", "id", "sira"]:
-                if col in df.columns:
-                    df[col] = df[col].apply(lambda x: clean_val(x))
+            # Pandas veri tipi uyuşmazlıklarını önlemek için tüm DataFrame'i esnek 'object' tipine çeviriyoruz
+            df = df.astype(object)
+            for col in df.columns:
+                df[col] = df[col].apply(lambda x: clean_val(x))
             return df.copy()
         return pd.DataFrame()
     except Exception:
@@ -164,7 +165,6 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
         pdf.ln(3)
         
         if st_row['FORM DURUMU'] == "DOLDURDU":
-            # Öğrencinin ID bazlı yanıt haritasını çıkaralım
             st_answers_by_id = {}
             for _, q_item in questions_df.iterrows():
                 q_id_str = clean_val(q_item['id'])
@@ -174,7 +174,6 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
             for _, q in questions_df.iterrows():
                 q_title = q['soru_metni']
                 
-                # Şartlar sağlanmıyorsa PDF'e de yazdırma
                 if not is_question_visible(q, st_answers_by_id):
                     continue
                 
@@ -199,8 +198,8 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
-st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
-tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
+st.title("Konya Lisesi Öğrenci Bilgi Formu")
+tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Panel"])
 
 # --- TAB 1: ÖĞRENCİ FORMU ---
 with tab1:
@@ -269,7 +268,6 @@ with tab1:
                             q_metni = q['soru_metni']
                             q_type = q["soru_tipi"]
                             
-                            # Çoklu veya tekli şart denetimi yapılıyor
                             if not is_question_visible(q, st.session_state["answers"]):
                                 st.session_state["answers"][q_id] = ""
                                 continue
@@ -347,10 +345,11 @@ with tab1:
                                 if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
                                     df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                                 
+                                df_yanitlar = df_yanitlar.astype(object)
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
                                     idx_to_update = df_yanitlar[df_yanitlar["numara"] == secilen_no].index[0]
                                     for col, val in new_row_data.items():
-                                        df_yanitlar.loc[idx_to_update, col] = val
+                                        df_yanitlar.at[idx_to_update, col] = val
                                 else:
                                     new_row_df = pd.DataFrame([new_row_data])
                                     df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
@@ -360,7 +359,7 @@ with tab1:
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
 with tab2:
-    st.subheader("Yönetici & Öğretmen Paneli")
+    st.subheader("Panel")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
     if sifre == "admin123":
@@ -504,7 +503,7 @@ with tab2:
                                 "soru_metni": y_metin,
                                 "soru_tipi": y_tip,
                                 "secenekler": y_secenekler,
-                                "sira": y_sira,
+                                "sira": str(y_sira),
                                 "bagli_parent_id": clean_val(y_parent_id, "0"),
                                 "bagli_parent_deger": clean_val(y_parent_val)
                             }
@@ -537,11 +536,19 @@ with tab2:
                             sil = btn_col2.form_submit_button("🗑️ Soruyu Sil", type="primary")
                             
                             if guncelle:
-                                mask = df_q['id'].apply(lambda x: clean_val(x)) == secilen_q_id
-                                df_q.loc[mask, ['soru_metni', 'soru_tipi', 'secenekler', 'sira', 'bagli_parent_id', 'bagli_parent_deger']] = [d_metin, d_tip, d_secenekler, d_sira, d_parent_id, d_parent_val]
-                                save_data("sorular", df_q)
-                                st.success("✅ Soru güncellendi!")
-                                st.rerun()
+                                idx_match = df_q[df_q['id'].apply(lambda x: clean_val(x)) == secilen_q_id].index
+                                if not idx_match.empty:
+                                    q_idx = idx_match[0]
+                                    df_q = df_q.astype(object)
+                                    df_q.at[q_idx, 'soru_metni'] = str(d_metin)
+                                    df_q.at[q_idx, 'soru_tipi'] = str(d_tip)
+                                    df_q.at[q_idx, 'secenekler'] = str(d_secenekler)
+                                    df_q.at[q_idx, 'sira'] = str(d_sira)
+                                    df_q.at[q_idx, 'bagli_parent_id'] = str(d_parent_id)
+                                    df_q.at[q_idx, 'bagli_parent_deger'] = str(d_parent_val)
+                                    save_data("sorular", df_q)
+                                    st.success("✅ Soru güncellendi!")
+                                    st.rerun()
                                 
                             if sil:
                                 df_q_updated = df_q[df_q['id'].apply(lambda x: clean_val(x)) != secilen_q_id]
