@@ -206,10 +206,11 @@ with tab1:
                 
                 if secilen_ogrenci != "SEÇİNİZ":
                     secilen_no = clean_val(secilen_ogrenci.split(" - ")[0])
+                    student_row = filtered[filtered["numara"].astype(str) == secilen_no].iloc[0]
                     
                     df_yanitlar = get_data("yanitlar")
                     if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                        df_yanitlar = pd.DataFrame(columns=["numara", "tarih"])
+                        df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                     
                     mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
                     
@@ -283,8 +284,17 @@ with tab1:
                         st.write("")
                         if st.button("💾 Formu Gönder / Kaydet", type="primary"):
                             tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            new_row_data = {"numara": secilen_no, "tarih": tarih}
                             
+                            # A'dan E'ye kadar olan sütunlar
+                            new_row_data = {
+                                "numara": secilen_no,
+                                "sinif": clean_val(student_row["sinif"]),
+                                "sube": clean_val(student_row["sube"]),
+                                "ogretmen": clean_val(student_row["ogretmen"]),
+                                "ad_soyad": clean_val(student_row["ad_soyad"])
+                            }
+                            
+                            # F sütunundan itibaren sorular başlıyor
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
@@ -314,12 +324,15 @@ with tab1:
                                         st.session_state["answers"][q_id] = q_val
                                 
                                 new_row_data[q_metni] = q_val
+                                
+                            # En sona tarihi ekleyelim
+                            new_row_data["tarih"] = tarih
                             
                             if validation_errors:
                                 for err in validation_errors: st.error(err)
                             else:
                                 if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                                    df_yanitlar = pd.DataFrame(columns=["numara", "tarih"])
+                                    df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                                 
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
                                     idx_to_update = df_yanitlar[df_yanitlar["numara"] == secilen_no].index[0]
@@ -346,7 +359,7 @@ with tab2:
             df_o = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
             
         if df_y.empty or "numara" not in df_y.columns:
-            df_y = pd.DataFrame(columns=["numara", "tarih"])
+            df_y = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
             
         if df_q.empty or "id" not in df_q.columns:
             df_q = pd.DataFrame(columns=["id", "soru_metni", "soru_tipi", "secenekler", "sira", "bagli_parent_id", "bagli_parent_deger"])
@@ -355,11 +368,21 @@ with tab2:
                 df_q["sira"] = pd.to_numeric(df_q["sira"], errors='coerce').fillna(999)
                 df_q = df_q.sort_values(by=["sira", "id"])
         
-        merged_all = pd.merge(df_o, df_y, on='numara', how='left') if not df_o.empty else pd.DataFrame()
-        if not merged_all.empty:
-            merged_all['FORM DURUMU'] = merged_all['tarih'].apply(lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI")
+        if not df_o.empty:
+            # df_y içerisindeki e-Okul bilgileri df_o'da zaten var, çakışmayı önlemek için siliyoruz
+            if not df_y.empty:
+                cols_to_use = ['numara'] + [c for c in df_y.columns if c not in df_o.columns]
+                merged_all = pd.merge(df_o, df_y[cols_to_use], on='numara', how='left')
+            else:
+                merged_all = df_o.copy()
+            
+            merged_all['FORM DURUMU'] = merged_all.get('tarih', pd.Series([None]*len(merged_all))).apply(
+                lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI"
+            )
             merged_all['sinif_sube'] = merged_all['sinif'].astype(str) + "/" + merged_all['sube'].astype(str)
-        
+        else:
+            merged_all = pd.DataFrame()
+            
         sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
             "📊 İstatistikler", "📗 Excel Raporu", "📄 PDF Dökümleri", "🛠️ Soru & e-Okul Yönetimi"
         ])
