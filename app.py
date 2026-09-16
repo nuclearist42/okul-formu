@@ -111,35 +111,42 @@ def is_question_visible(q_row, answers_map):
                 
     return True
 
+def clear_all_caches():
+    """Tüm önbelleği ve session state yedeklerini temizler."""
+    st.cache_data.clear()
+    for key in list(st.session_state.keys()):
+        if key.startswith("backup_df_"):
+            del st.session_state[key]
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_gsheet_cached(worksheet_name):
-    """Google Sheets verisini hızlı çalışan bellek hafızasında saklar."""
+    """Google Sheets verisini okur. Hata durumunda None döner."""
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=300)
-        if df is not None and not df.empty:
+        if df is not None:
             df = df.astype(object)
             for col in df.columns:
                 df[col] = df[col].apply(lambda x: clean_val(x))
             return df.copy()
         return pd.DataFrame()
     except Exception:
-        return pd.DataFrame()
+        return None
 
 def get_data(worksheet_name):
-    """Hafızadaki veriyi alır. Kota aşımı olsa bile önbellekteki veriyi korur."""
+    """Hafızadaki veriyi alır. API hatası durumunda session state yedeğine başvurur."""
     df = fetch_gsheet_cached(worksheet_name)
     ss_key = f"backup_df_{worksheet_name}"
     
-    if df is not None and not df.empty:
+    if df is not None:
         st.session_state[ss_key] = df
+        return df.copy()
     elif ss_key in st.session_state:
-        df = st.session_state[ss_key]
-        
-    return df.copy() if df is not None else pd.DataFrame()
+        return st.session_state[ss_key].copy()
+    return pd.DataFrame()
 
 def save_data(worksheet_name, df):
     conn_gs.update(worksheet=worksheet_name, data=df)
-    st.cache_data.clear()
+    clear_all_caches()
 
 def sort_sinif_sube_key(item):
     m = re.search(r'(\d+)', str(item))
@@ -275,7 +282,16 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
-st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
+col_title, col_btn = st.columns([4, 1])
+with col_title:
+    st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
+with col_btn:
+    st.write("")
+    if st.button("🔄 Verileri Yenile", help="Google Sheets verilerini yeniden çeker ve önbelleği temizler"):
+        clear_all_caches()
+        st.success("Veriler yenilendi!")
+        st.rerun()
+
 tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
 
 # --- TAB 1: ÖĞRENCİ FORMU ---
@@ -313,7 +329,7 @@ with tab1:
                     if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
                         df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                     
-                    mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
+                    mevcut_yanit = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
                     
                     can_submit, is_update = True, False
                     eski_cevaplar = {}
@@ -423,8 +439,8 @@ with tab1:
                                     df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                                 
                                 df_yanitlar = df_yanitlar.astype(object)
-                                if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
-                                    idx_to_update = df_yanitlar[df_yanitlar["numara"] == secilen_no].index[0]
+                                if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].astype(str).values:
+                                    idx_to_update = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no].index[0]
                                     for col, val in new_row_data.items():
                                         df_yanitlar.at[idx_to_update, col] = val
                                 else:
@@ -545,12 +561,31 @@ with tab2:
         with sub_tab4:
             st.markdown("### 🛠️ Sistem Yönetim Paneli")
             
-            with st.expander("📥 e-Okul Excel Listesi Yükle / Güncelle", expanded=True):
+            with st.expander("📥 e-Okul Excel Listesi Yükle / Güncelle", expanded=False):
                 uploaded_file = st.file_uploader("e-Okul'dan aldığınız Sinif_Listesi.xls/xlsx dosyasını seçin:", type=["xls", "xlsx"])
                 if uploaded_file and st.button("Veritabanına İşle"):
                     toplam = parse_and_save_eokul(uploaded_file)
                     st.success(f"✅ {toplam} öğrenci başarıyla Google Sheets veritabanına aktarıldı!")
                     st.rerun()
+
+            with st.expander("🗑️ Doldurulmuş Öğrenci Form Yanıtını Sil / Sıfırla", expanded=True):
+                df_y_del = get_data("yanitlar")
+                if not df_y_del.empty and "numara" in df_y_del.columns:
+                    df_valid_y = df_y_del[df_y_del["numara"].astype(str).str.strip() != ""].copy()
+                    if not df_valid_y.empty:
+                        df_valid_y["disp_sil"] = df_valid_y.apply(lambda r: f"{r['numara']} - {r.get('ad_soyad', '')} ({r.get('sinif', '')}/{r.get('sube', '')})", axis=1)
+                        silinecek_ogrenci = st.selectbox("Yanıtı Silinecek Öğrenciyi Seçin:", ["SEÇİNİZ"] + list(df_valid_y["disp_sil"]))
+                        if silinecek_ogrenci != "SEÇİNİZ":
+                            sil_no = clean_val(silinecek_ogrenci.split(" - ")[0])
+                            if st.button(f"🗑️ {sil_no} Numaralı Öğrencinin Yanıtlarını Tamamen Sil", type="primary"):
+                                df_y_updated = df_y_del[df_y_del["numara"].astype(str) != sil_no]
+                                save_data("yanitlar", df_y_updated)
+                                st.success(f"✅ {sil_no} numaralı öğrencinin yanıtları başarıyla silindi!")
+                                st.rerun()
+                    else:
+                        st.info("Sistemde henüz doldurulmuş yanıt bulunmuyor.")
+                else:
+                    st.info("Sistemde henüz doldurulmuş yanıt bulunmuyor.")
 
             st.divider()
             st.markdown("### 📝 Form Sorularını Yönet (CRUD)")
