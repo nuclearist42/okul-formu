@@ -4,7 +4,6 @@ import datetime
 import json
 import re
 import io
-from fpdf import FPDF
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================
@@ -24,10 +23,6 @@ def clean_val(val, default=""):
     return val_str
 
 def clean_id(val):
-    """
-    Herhangi bir ID veya virgüllü/noktalı ID stringini temizler.
-    Google Sheets'in '33,44' değerini ondalıklı '33.44' yapması durumunu düzeltir.
-    """
     if pd.isna(val) or val is None:
         return "0"
     s = str(val).strip()
@@ -42,7 +37,6 @@ def clean_id(val):
     return ",".join(parts) if parts else "0"
 
 def tr_norm(text):
-    """Metni Türkçe karakterlerden arındırıp büyük harfe çevirir ve temizler."""
     if pd.isna(text) or text is None:
         return ""
     t = str(text).strip()
@@ -60,20 +54,10 @@ def tr_norm(text):
 
 def get_ans_for_id(pid, answers_map):
     pid_str = clean_val(pid)
-    widget_key = f"widget_{pid_str}"
-    
-    # 1. Canlı Streamlit widget kontrolü
-    if widget_key in st.session_state:
-        val = str(st.session_state[widget_key]).strip()
-        if val and val != "SEÇİNİZ":
-            return val
-            
-    # 2. Answers haritası kontrolü
     if answers_map and pid_str in answers_map:
         val = str(answers_map.get(pid_str, "")).strip()
         if val and val != "SEÇİNİZ":
             return val
-            
     return ""
 
 def is_question_visible(q_row, answers_map):
@@ -112,17 +96,15 @@ def is_question_visible(q_row, answers_map):
     return True
 
 def clear_all_caches():
-    """Tüm önbelleği ve session state yedeklerini temizler."""
     st.cache_data.clear()
     for key in list(st.session_state.keys()):
         if key.startswith("backup_df_"):
             del st.session_state[key]
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_gsheet_cached(worksheet_name):
-    """Google Sheets verisini okur. Hata durumunda None döner."""
     try:
-        df = conn_gs.read(worksheet=worksheet_name, ttl=300)
+        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None:
             df = df.astype(object)
             for col in df.columns:
@@ -133,7 +115,6 @@ def fetch_gsheet_cached(worksheet_name):
         return None
 
 def get_data(worksheet_name):
-    """Hafızadaki veriyi alır. API hatası durumunda session state yedeğine başvurur."""
     df = fetch_gsheet_cached(worksheet_name)
     ss_key = f"backup_df_{worksheet_name}"
     
@@ -166,14 +147,8 @@ def mask_name(name):
     words = str(name).strip().split()
     return " ".join([w[:2] + "*" * (len(w) - 2) if len(w) > 2 else w[0] + "*" for w in words])
 
-def tr_fix(text):
-    mapping = {'İ': 'I', 'ı': 'i', 'Ş': 'S', 'ş': 's', 'Ğ': 'G', 'ğ': 'g', 'Ü': 'U', 'ü': 'u', 'Ö': 'O', 'ö': 'o', 'Ç': 'C', 'ç': 'c'}
-    for tr, en in mapping.items(): 
-        text = str(text).replace(tr, en)
-    return text
-
 # ==========================================
-# 2. e-OKUL EXCEL PARSER & PDF
+# 2. e-OKUL EXCEL PARSER
 # ==========================================
 def parse_and_save_eokul(file_buffer):
     def clean(val):
@@ -221,7 +196,7 @@ def parse_and_save_eokul(file_buffer):
                     all_students.append({
                         "numara": numara_str,
                         "sinif": clean_val(c_sinif) if c_sinif else "Tanımsız",
-                        "sube": clean_val(c_sube) if c_sube else "Tanımsız",
+                        "sube": clean_val(c_sube) if c_sube else "Tanımlanmadı",
                         "ogretmen": c_ogretmen if c_ogretmen else "Tanımlanmadı",
                         "ad_soyad": f"{val_ad} {val_soyad}".strip()
                     })
@@ -231,162 +206,6 @@ def parse_and_save_eokul(file_buffer):
         save_data("ogrenciler", df_new)
     return len(all_students)
 
-def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
-    pdf = FPDF(orientation='P', unit='mm', format='A4')
-    pdf.set_auto_page_break(auto=False) # 1 sayfaya tam sığdırmak için
-
-    for idx, st_row in df_sube_merged.iterrows():
-        pdf.add_page()
-        
-        # Öğrenci yanıtlarını haritalandır
-        ans = {}
-        if st_row['FORM DURUMU'] == "DOLDURDU":
-            for _, q_item in questions_df.iterrows():
-                q_id = clean_val(q_item['id'])
-                q_title = clean_val(q_item['soru_metni'])
-                ans[q_id] = clean_val(st_row.get(q_title, "-"))
-                ans[q_title] = clean_val(st_row.get(q_title, "-"))
-
-        def get_v(key_or_id):
-            v = ans.get(key_or_id, "-")
-            return tr_fix(v if v != "" else "-")
-
-        # --- YARDIMCI ÇİZİM FONKSİYONLARI ---
-        def sec_header(title):
-            pdf.set_font("Helvetica", 'B', 8)
-            pdf.set_fill_color(220, 220, 220)
-            pdf.set_text_color(0, 0, 0)
-            pdf.cell(190, 5, tr_fix(title), border=1, ln=True, align="L", fill=True)
-
-        def draw_cell(w, h, txt, bold=False, align="L", fill=False):
-            pdf.set_font("Helvetica", 'B' if bold else '', 7)
-            pdf.cell(w, h, tr_fix(str(txt)), border=1, align=align, fill=fill)
-
-        # --- SAYFA BAŞLIĞI ---
-        pdf.set_font("Helvetica", 'B', 10)
-        pdf.cell(190, 6, tr_fix("2025-2026 ÖĞRETİM YILI KONYA LİSESİ ÖĞRENCİ BİLGİ FORMU"), border=1, ln=True, align="C")
-        pdf.ln(1)
-
-        # --- 1. ÖĞRENCİ BİLGİLERİ ---
-        sec_header("ÖĞRENCİ BİLGİLERİ")
-        draw_cell(50, 4, "ADI SOYADI", bold=True, fill=True)
-        draw_cell(20, 4, "SINIFI", bold=True, fill=True)
-        draw_cell(30, 4, "OKUL NO", bold=True, fill=True)
-        draw_cell(45, 4, "YABANCI DİLİ", bold=True, fill=True)
-        draw_cell(45, 4, "VELİSİ", bold=True, fill=True)
-        pdf.ln()
-        
-        draw_cell(50, 5, st_row.get('ad_soyad', '-'), bold=True)
-        draw_cell(20, 5, sinif_sube_adi, bold=True)
-        draw_cell(30, 5, st_row.get('numara', '-'), bold=True)
-        draw_cell(45, 5, get_v("YABANCI DİLİ"))
-        draw_cell(45, 5, get_v("VELİSİ"))
-        pdf.ln()
-        pdf.ln(1)
-
-        # --- 2. VELİSİ ANNE BABA HARİCİNDE İSE ---
-        sec_header("VELİSİ ANNE BABA HARİCİNDE İSE")
-        draw_cell(50, 4, "VELİ TC KİMLİK NO", bold=True, fill=True)
-        draw_cell(80, 4, "VELİ ADI SOYADI", bold=True, fill=True)
-        draw_cell(60, 4, "VELİ YAKINLIK DERECESİ", bold=True, fill=True)
-        pdf.ln()
-        draw_cell(50, 4, get_v("VELİ TC KİMLİK NO"))
-        draw_cell(80, 4, get_v("VELİ ADI SOYADI"))
-        draw_cell(60, 4, get_v("VELİ YAKINLIK DERECESİ"))
-        pdf.ln()
-        pdf.ln(1)
-
-        # --- 3. ÖĞRENCİ GENEL BİLGİLERİ ---
-        sec_header("ÖĞRENCİ GENEL BİLGİLERİ")
-        
-        genel_grid = [
-            [("Kiminle oturuyor?", True), (get_v("Kiminle oturuyor?"), False), ("Bir işte çalışıyor mu?", True), (get_v("Bir işte çalışıyor mu?"), False), ("Geçirdiği hastalık", True), (get_v("Geçirdiği hastalık"), False)],
-            [("Oturduğu ev:", True), (get_v("Oturduğu ev:"), False), ("Aile dışında kalan var mı?", True), (get_v("Aile dışında kalan var mı?"), False), ("Sürekli hastalığı", True), (get_v("Sürekli hastalığı"), False)],
-            [("Kendi odası var mı?", True), (get_v("Kendi odası var mı?"), False), ("Geçirdiği kaza", True), (get_v("Geçirdiği kaza"), False), ("Sürekli kullandığı ilaç", True), (get_v("Sürekli kullandığı ilaç"), False)],
-            [("Ev ne ile ısınıyor?", True), (get_v("Ev ne ile ısınıyor?"), False), ("Geçirdiği Ameliyat", True), (get_v("Geçirdiği Ameliyat"), False), ("Kardeş sayısı", True), (get_v("Kardeş sayısı"), False)],
-            [("Okula nasıl geliyor?", True), (get_v("Okula nasıl geliyor?"), False), ("Kullandığı cihaz, protez", True), (get_v("Kullandığı cihaz, protez"), False), ("Aile gelir durumu", True), (get_v("Aile gelir durumu"), False)],
-        ]
-        
-        for row in genel_grid:
-            for item in row:
-                # Genişlikler: Etiket 38mm, Değer 25.3mm x 3 = 190mm
-                w = 38 if item[1] else 25.3
-                draw_cell(w, 4.5, item[0], bold=item[1], fill=item[1])
-            pdf.ln()
-        pdf.ln(1)
-
-        # --- 4. FİZİKSEL VE ÖZEL DURUM ---
-        pdf.set_font("Helvetica", 'B', 8)
-        pdf.set_fill_color(220, 220, 220)
-        pdf.cell(95, 4, tr_fix("ÖĞRENCİ FİZİKSEL DURUMU"), border=1, fill=True)
-        pdf.cell(95, 4, tr_fix("ÖĞRENCİ ÖZEL DURUMU"), border=1, ln=True, fill=True)
-
-        # Satır 1
-        draw_cell(20, 4, "Boy", bold=True, fill=True)
-        draw_cell(25, 4, get_v("Boy"))
-        draw_cell(15, 4, "Kilo", bold=True, fill=True)
-        draw_cell(35, 4, get_v("Kilo"))
-        draw_cell(45, 4, "ANNE-BABA", bold=True, fill=True)
-        draw_cell(50, 4, get_v("ANNE-BABA"))
-        pdf.ln()
-
-        # Satır 2
-        draw_cell(20, 4, "Kan grubu", bold=True, fill=True)
-        draw_cell(75, 4, get_v("Kan grubu"))
-        draw_cell(45, 4, "Velayet kimde? (gerekli ise)", bold=True, fill=True)
-        draw_cell(50, 4, get_v("Velayet kimde?"))
-        pdf.ln()
-        pdf.ln(1)
-
-        # --- 5. BABA BİLGİLERİ ---
-        sec_header("BABA BİLGİLERİ")
-        baba_grid = [
-            [("ADI SOYADI", get_v("BABA ADI SOYADI")), ("SÜREKLİ HASTALIĞI", get_v("BABA SÜREKLİ HASTALIĞI"))],
-            [("SAĞ/ÖLÜ", get_v("BABA SAĞ/ÖLÜ")), ("ENGEL DURUMU", get_v("BABA ENGEL DURUMU"))],
-            [("ÖĞRENİM DURUMU", get_v("BABA ÖĞRENİM DURUMU")), ("E-POSTA ADRESİ", get_v("BABA E-POSTA ADRESİ"))],
-            [("MESLEĞİ", get_v("BABA MESLEĞİ")), ("TELEFON NO", get_v("BABA TELEFON NO"))],
-        ]
-        for row in baba_grid:
-            draw_cell(35, 4, row[0][0], bold=True, fill=True)
-            draw_cell(60, 4, row[0][1])
-            draw_cell(35, 4, row[1][0], bold=True, fill=True)
-            draw_cell(60, 4, row[1][1])
-            pdf.ln()
-        pdf.ln(1)
-
-        # --- 6. ANNE BİLGİLERİ ---
-        sec_header("ANNE BİLGİLERİ")
-        anne_grid = [
-            [("ADI SOYADI", get_v("ANNE ADI SOYADI")), ("SÜREKLİ HASTALIĞI", get_v("ANNE SÜREKLİ HASTALIĞI"))],
-            [("SAĞ/ÖLÜ", get_v("ANNE SAĞ/ÖLÜ")), ("ENGEL DURUMU", get_v("ANNE ENGEL DURUMU"))],
-            [("ÖĞRENİM DURUMU", get_v("ANNE ÖĞRENİM DURUMU")), ("E-POSTA ADRESİ", get_v("ANNE E-POSTA ADRESİ"))],
-            [("MESLEĞİ", get_v("ANNE MESLEĞİ")), ("TELEFON NO", get_v("ANNE TELEFON NO"))],
-        ]
-        for row in anne_grid:
-            draw_cell(35, 4, row[0][0], bold=True, fill=True)
-            draw_cell(60, 4, row[0][1])
-            draw_cell(35, 4, row[1][0], bold=True, fill=True)
-            draw_cell(60, 4, row[1][1])
-            pdf.ln()
-        pdf.ln(3)
-
-        # --- ALT İMZA VE ONAY BÖLÜMÜ ---
-        pdf.set_font("Helvetica", 'B', 8)
-        pdf.cell(95, 4, tr_fix(f"Sınıf Öğretmeni: {st_row.get('ogretmen', '')}"), border=0)
-        pdf.cell(95, 4, tr_fix("BİLGİLERİN DOĞRULUĞU TARAFIMDAN KONTROL EDİLMİŞTİR."), border=0, ln=True)
-        
-        pdf.set_font("Helvetica", '', 8)
-        pdf.cell(95, 4, "", border=0)
-        pdf.cell(95, 4, tr_fix("VELİ İMZA:"), border=0, ln=True)
-        
-        pdf.cell(95, 4, "", border=0)
-        pdf.cell(95, 4, tr_fix("VELİ ADI SOYADI:"), border=0, ln=True)
-        
-        pdf.cell(95, 4, "", border=0)
-        pdf.cell(95, 4, tr_fix("../2025"), border=0, ln=True)
-
-    return pdf.output()
-
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
@@ -395,7 +214,7 @@ with col_title:
     st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
 with col_btn:
     st.write("")
-    if st.button("🔄 Verileri Yenile", help="Google Sheets verilerini yeniden çeker ve önbelleği temizler"):
+    if st.button("🔄 Verileri Yenile"):
         clear_all_caches()
         st.success("Veriler yenilendi!")
         st.rerun()
@@ -461,49 +280,62 @@ with tab1:
                         if "answers" not in st.session_state or st.session_state.get("current_no") != secilen_no:
                             st.session_state["answers"] = eski_cevaplar.copy()
                             st.session_state["current_no"] = secilen_no
-                            
-                        validation_errors = []
                         
-                        for _, q in df_questions.iterrows():
-                            q_id = clean_val(q["id"])
-                            q_metni = q['soru_metni']
-                            q_type = q["soru_tipi"]
+                        # --- HIZLANDIRILMIŞ FORM YAPISI ---
+                        with st.form("ogrenci_bilgi_formu", clear_on_submit=False):
+                            form_input_values = {}
                             
-                            # Canlı görünürlük kontrolü
-                            if not is_question_visible(q, st.session_state["answers"]):
-                                st.session_state["answers"][q_id] = ""
-                                continue
+                            for _, q in df_questions.iterrows():
+                                q_id = clean_val(q["id"])
+                                q_metni = q['soru_metni']
+                                q_type = q["soru_tipi"]
+                                
+                                # Görünürlük kontrolü
+                                if not is_question_visible(q, st.session_state["answers"]):
+                                    form_input_values[q_id] = ""
+                                    continue
+                                        
+                                default_val = get_ans_for_id(q_id, st.session_state["answers"])
+                                raw_sec = clean_val(q.get("secenekler", ""), default="")
+                                
+                                # Eğer soru bir ÜST SORU ise (Anne Sağ/Ölü, Anne-Baba Birlikte/Ayrı vb.) form dışı re-render tetiklenebilir
+                                is_parent_q = clean_val(q['id']) in [clean_id(x) for x in df_questions['bagli_parent_id'].astype(str)]
+                                
+                                if q_type == "coktan_secmeli":
+                                    opts = ["SEÇİNİZ"] + [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
+                                    idx = opts.index(default_val) if default_val in opts else 0
+                                    selected = st.selectbox(f"📌 {q_metni}", opts, index=idx, key=f"widget_{q_id}")
+                                    form_input_values[q_id] = selected
+                                    st.session_state["answers"][q_id] = selected
                                     
-                            default_val = get_ans_for_id(q_id, st.session_state["answers"])
-                            raw_sec = clean_val(q.get("secenekler", ""), default="")
-                            
-                            if q_type == "coktan_secmeli":
-                                opts = ["SEÇİNİZ"] + [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
-                                idx = opts.index(default_val) if default_val in opts else 0
-                                selected = st.selectbox(f"📌 {q_metni}", opts, index=idx, key=f"widget_{q_id}")
-                                st.session_state["answers"][q_id] = selected
-                                
-                            elif q_type == "coklu_secim":
-                                opts = [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
-                                def_list = [x.strip() for x in default_val.split(",") if x.strip()] if default_val else []
-                                valid_def_list = [x for x in def_list if x in opts]
-                                sel_list = st.multiselect(f"📌 {q_metni}", opts, default=valid_def_list, key=f"widget_{q_id}")
-                                st.session_state["answers"][q_id] = ", ".join(sel_list)
-                                
-                            elif q_type == "tc_no":
-                                val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=11, key=f"widget_{q_id}")
-                                st.session_state["answers"][q_id] = val
-                                
-                            elif q_type == "telefon":
-                                val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=14, key=f"widget_{q_id}")
-                                st.session_state["answers"][q_id] = val
-                                
-                            else:
-                                val = st.text_input(f"📌 {q_metni}", value=default_val, key=f"widget_{q_id}")
-                                st.session_state["answers"][q_id] = val
+                                elif q_type == "coklu_secim":
+                                    opts = [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
+                                    def_list = [x.strip() for x in default_val.split(",") if x.strip()] if default_val else []
+                                    valid_def_list = [x for x in def_list if x in opts]
+                                    sel_list = st.multiselect(f"📌 {q_metni}", opts, default=valid_def_list, key=f"widget_{q_id}")
+                                    form_input_values[q_id] = ", ".join(sel_list)
+                                    st.session_state["answers"][q_id] = ", ".join(sel_list)
+                                    
+                                elif q_type == "tc_no":
+                                    val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=11, key=f"widget_{q_id}")
+                                    form_input_values[q_id] = val
+                                    st.session_state["answers"][q_id] = val
+                                    
+                                elif q_type == "telefon":
+                                    val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=14, key=f"widget_{q_id}")
+                                    form_input_values[q_id] = val
+                                    st.session_state["answers"][q_id] = val
+                                    
+                                else:
+                                    val = st.text_input(f"📌 {q_metni}", value=default_val, key=f"widget_{q_id}")
+                                    form_input_values[q_id] = val
+                                    st.session_state["answers"][q_id] = val
 
-                        st.write("")
-                        if st.button("💾 Formu Gönder / Kaydet", type="primary"):
+                            st.write("")
+                            submit_btn = st.form_submit_button("💾 Formu Gönder / Kaydet", type="primary")
+
+                        if submit_btn:
+                            validation_errors = []
                             tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
                             new_row_data = {
@@ -517,10 +349,10 @@ with tab1:
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
-                                q_val = get_ans_for_id(q_id, st.session_state["answers"])
+                                q_val = form_input_values.get(q_id, "")
                                 q_type = q["soru_tipi"]
                                 
-                                if not is_question_visible(q, st.session_state["answers"]):
+                                if not is_question_visible(q, form_input_values):
                                     new_row_data[q_metni] = ""
                                     continue
                                 
@@ -595,8 +427,8 @@ with tab2:
         else:
             merged_all = pd.DataFrame()
             
-        sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
-            "📊 İstatistikler", "📗 Excel Raporu", "📄 PDF Dökümleri", "🛠️ Soru & e-Okul Yönetimi"
+        sub_tab1, sub_tab2, sub_tab3 = st.tabs([
+            "📊 İstatistikler", "📗 Excel Raporu", "🛠️ Soru & e-Okul Yönetimi"
         ])
         
         with sub_tab1:
@@ -655,18 +487,6 @@ with tab2:
                 st.info("Rapor oluşturmak için yeterli veri bulunamadı.")
 
         with sub_tab3:
-            st.markdown("### 📄 Sınıf Bazlı PDF Dökümleri")
-            if not merged_all.empty and not df_q.empty and 'sinif_sube' in merged_all.columns:
-                tum_subeler = sorted(merged_all['sinif_sube'].unique().tolist(), key=sort_sinif_sube_key)
-                secilen_pdf_sube = st.selectbox("Sınıf Seçin:", tum_subeler)
-                if st.button("PDF Raporu Oluştur"):
-                    sube_students = merged_all[merged_all['sinif_sube'] == secilen_pdf_sube]
-                    pdf_bytes = generate_class_pdf(sube_students, df_q, secilen_pdf_sube)
-                    st.download_button(f"📥 {secilen_pdf_sube.replace('/', '_')}_Formlar.pdf İndir", data=bytes(pdf_bytes), file_name=f"{secilen_pdf_sube.replace('/', '_')}_Formlar.pdf")
-            else:
-                st.info("PDF oluşturmak için öğrenci ve soru verisi gereklidir.")
-
-        with sub_tab4:
             st.markdown("### 🛠️ Sistem Yönetim Paneli")
             
             with st.expander("📥 e-Okul Excel Listesi Yükle / Güncelle", expanded=False):
