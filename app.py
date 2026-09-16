@@ -63,6 +63,30 @@ def tr_fix(text):
         text = str(text).replace(tr, en)
     return text
 
+def is_question_visible(q_row, answers_map):
+    """
+    Sorunun gösterilip gösterilmeyeceğini denetler.
+    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '3,4' ve bagli_parent_deger = 'SAĞ,SAĞ').
+    Tüm şartlar sağlandığında True döner.
+    """
+    parent_id_str = clean_val(q_row.get('bagli_parent_id'), default="0")
+    parent_target_str = clean_val(q_row.get('bagli_parent_deger'), default="")
+    
+    if parent_id_str == "0" or not parent_id_str:
+        return True
+        
+    p_ids = [x.strip() for x in parent_id_str.split(',') if x.strip()]
+    p_targets = [x.strip() for x in parent_target_str.split(',') if x.strip()]
+    
+    for idx, pid in enumerate(p_ids):
+        target = p_targets[idx] if idx < len(p_targets) else ""
+        ans = str(answers_map.get(pid, "")).strip()
+        
+        if target and ans.upper() != target.upper():
+            return False
+            
+    return True
+
 # ==========================================
 # 2. e-OKUL EXCEL PARSER & PDF
 # ==========================================
@@ -140,18 +164,19 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
         pdf.ln(3)
         
         if st_row['FORM DURUMU'] == "DOLDURDU":
+            # Öğrencinin ID bazlı yanıt haritasını çıkaralım
+            st_answers_by_id = {}
+            for _, q_item in questions_df.iterrows():
+                q_id_str = clean_val(q_item['id'])
+                q_title_str = q_item['soru_metni']
+                st_answers_by_id[q_id_str] = clean_val(st_row.get(q_title_str, ""))
+
             for _, q in questions_df.iterrows():
                 q_title = q['soru_metni']
-                parent_id = clean_val(q.get('bagli_parent_id'), default="0")
-                parent_target = clean_val(q.get('bagli_parent_deger'), default="")
                 
-                if parent_id != "0" and parent_id != "":
-                    parent_q_rows = questions_df[questions_df['id'].astype(str) == parent_id]
-                    if not parent_q_rows.empty:
-                        parent_title = parent_q_rows.iloc[0]['soru_metni']
-                        parent_ans = str(st_row.get(parent_title, "")).strip()
-                        if parent_ans != parent_target:
-                            continue
+                # Şartlar sağlanmıyorsa PDF'e de yazdırma
+                if not is_question_visible(q, st_answers_by_id):
+                    continue
                 
                 q_ans = tr_fix(str(st_row.get(q_title, "-")).strip())
                 if q_ans.lower() in ["nan", "none", ""]: q_ans = "-"
@@ -244,14 +269,10 @@ with tab1:
                             q_metni = q['soru_metni']
                             q_type = q["soru_tipi"]
                             
-                            parent_id = clean_val(q.get('bagli_parent_id'), default="0")
-                            parent_target = clean_val(q.get('bagli_parent_deger'), default="")
-                            
-                            if parent_id != "0" and parent_id != "":
-                                parent_ans = str(st.session_state["answers"].get(parent_id, "")).strip()
-                                if parent_ans != parent_target:
-                                    st.session_state["answers"][q_id] = ""
-                                    continue
+                            # Çoklu veya tekli şart denetimi yapılıyor
+                            if not is_question_visible(q, st.session_state["answers"]):
+                                st.session_state["answers"][q_id] = ""
+                                continue
                                     
                             default_val = st.session_state["answers"].get(q_id, "")
                             raw_sec = clean_val(q.get("secenekler", ""), default="")
@@ -285,7 +306,6 @@ with tab1:
                         if st.button("💾 Formu Gönder / Kaydet", type="primary"):
                             tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
-                            # A'dan E'ye kadar olan sütunlar
                             new_row_data = {
                                 "numara": secilen_no,
                                 "sinif": clean_val(student_row["sinif"]),
@@ -294,21 +314,15 @@ with tab1:
                                 "ad_soyad": clean_val(student_row["ad_soyad"])
                             }
                             
-                            # F sütunundan itibaren sorular başlıyor
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
                                 q_val = str(st.session_state["answers"].get(q_id, "")).strip()
                                 q_type = q["soru_tipi"]
                                 
-                                parent_id = clean_val(q.get('bagli_parent_id'), default="0")
-                                parent_target = clean_val(q.get('bagli_parent_deger'), default="")
-                                
-                                if parent_id != "0" and parent_id != "":
-                                    parent_ans = str(st.session_state["answers"].get(parent_id, "")).strip()
-                                    if parent_ans != parent_target:
-                                        new_row_data[q_metni] = ""
-                                        continue
+                                if not is_question_visible(q, st.session_state["answers"]):
+                                    new_row_data[q_metni] = ""
+                                    continue
                                 
                                 if q_type == "coktan_secmeli" and (q_val == "SEÇİNİZ" or not q_val):
                                     validation_errors.append(f"❌ **{q_metni}** sorusu için seçim yapınız.")
@@ -325,7 +339,6 @@ with tab1:
                                 
                                 new_row_data[q_metni] = q_val
                                 
-                            # En sona tarihi ekleyelim
                             new_row_data["tarih"] = tarih
                             
                             if validation_errors:
@@ -369,7 +382,6 @@ with tab2:
                 df_q = df_q.sort_values(by=["sira", "id"])
         
         if not df_o.empty:
-            # df_y içerisindeki e-Okul bilgileri df_o'da zaten var, çakışmayı önlemek için siliyoruz
             if not df_y.empty:
                 cols_to_use = ['numara'] + [c for c in df_y.columns if c not in df_o.columns]
                 merged_all = pd.merge(df_o, df_y[cols_to_use], on='numara', how='left')
@@ -476,14 +488,8 @@ with tab2:
                     y_secenekler = st.text_input("Seçenekler (Çoktan seçmeli veya çoklu seçim ise virgülle ayırın):", help="Örn: EVET,HAYIR veya DİYABET,ASTIM,YOK")
                     y_sira = st.number_input("Soru Sırası:", min_value=1, value=len(df_q) + 1 if not df_q.empty else 1)
                     
-                    parent_opts = {"Yok (Ana Soru)": "0"}
-                    if not df_q.empty and 'id' in df_q.columns:
-                        for _, q_item in df_q.iterrows():
-                            c_id = clean_val(q_item['id'])
-                            if c_id: parent_opts[f"ID:{c_id} - {q_item['soru_metni']}"] = c_id
-                    
-                    y_parent_sel = st.selectbox("Bağlı Olduğu Üst Soru (Şartlı Gösterim):", list(parent_opts.keys()))
-                    y_parent_val = st.text_input("Üst Sorunun Hangi Seçeneğinde Bu Soru Görünsün?:", help="Örn: DİĞER")
+                    y_parent_id = st.text_input("Bağlı Olduğu Üst Soru ID(leri):", help="Tek soru için örn: 3 | Birden fazla soru şartı için virgülle ayırın, örn: 3,4")
+                    y_parent_val = st.text_input("Şart Değer(leri):", help="Tek değer için örn: SAĞ | Birden fazla şart için virgülle ayırın, örn: SAĞ,SAĞ")
                     
                     if st.form_submit_button("➕ Soruyu Kaydet"):
                         if y_metin:
@@ -499,8 +505,8 @@ with tab2:
                                 "soru_tipi": y_tip,
                                 "secenekler": y_secenekler,
                                 "sira": y_sira,
-                                "bagli_parent_id": parent_opts[y_parent_sel],
-                                "bagli_parent_deger": y_parent_val
+                                "bagli_parent_id": clean_val(y_parent_id, "0"),
+                                "bagli_parent_deger": clean_val(y_parent_val)
                             }
                             df_q_updated = pd.concat([df_q, pd.DataFrame([new_q])], ignore_index=True)
                             save_data("sorular", df_q_updated)
@@ -523,6 +529,8 @@ with tab2:
                             d_tip = st.selectbox("Soru Tipi:", ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"], index=d_tip_idx)
                             d_secenekler = st.text_input("Seçenekler:", value=clean_val(q_row.get('secenekler')))
                             d_sira = st.number_input("Soru Sırası:", value=int(clean_val(q_row.get('sira'), "1") or 1))
+                            d_parent_id = st.text_input("Bağlı Üst Soru ID(leri):", value=clean_val(q_row.get('bagli_parent_id')), help="Örn: 3,4")
+                            d_parent_val = st.text_input("Şart Değer(leri):", value=clean_val(q_row.get('bagli_parent_deger')), help="Örn: SAĞ,SAĞ")
                             
                             btn_col1, btn_col2 = st.columns(2)
                             guncelle = btn_col1.form_submit_button("💾 Güncelle")
@@ -530,7 +538,7 @@ with tab2:
                             
                             if guncelle:
                                 mask = df_q['id'].apply(lambda x: clean_val(x)) == secilen_q_id
-                                df_q.loc[mask, ['soru_metni', 'soru_tipi', 'secenekler', 'sira']] = [d_metin, d_tip, d_secenekler, d_sira]
+                                df_q.loc[mask, ['soru_metni', 'soru_tipi', 'secenekler', 'sira', 'bagli_parent_id', 'bagli_parent_deger']] = [d_metin, d_tip, d_secenekler, d_sira, d_parent_id, d_parent_val]
                                 save_data("sorular", df_q)
                                 st.success("✅ Soru güncellendi!")
                                 st.rerun()
