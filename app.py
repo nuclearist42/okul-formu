@@ -23,11 +23,76 @@ def clean_val(val, default=""):
         val_str = val_str[:-2]
     return val_str
 
+def tr_norm(text):
+    """Metni Türkçe karakterlerden arındırıp büyük harfe çevirir ve temizler."""
+    if not text:
+        return ""
+    mapping = {'İ': 'I', 'ı': 'i', 'Ş': 'S', 'ş': 's', 'Ğ': 'G', 'ğ': 'g', 'Ü': 'U', 'ü': 'u', 'Ö': 'O', 'ö': 'o', 'Ç': 'C', 'ç': 'c'}
+    t = str(text)
+    for tr, en in mapping.items():
+        t = t.replace(tr, en)
+    return t.strip().upper()
+
+def get_ans_for_id(pid, answers_map):
+    """Önce canlı Streamlit widget durumuna, yoksa answers haritasına bakar."""
+    pid_str = clean_val(pid)
+    widget_key = f"widget_{pid_str}"
+    
+    # 1. Canlı Streamlit widget kontrolü
+    if widget_key in st.session_state:
+        val = str(st.session_state[widget_key]).strip()
+        if val and val != "SEÇİNİZ":
+            return val
+            
+    # 2. Answers haritası kontrolü
+    if answers_map and pid_str in answers_map:
+        val = str(answers_map.get(pid_str, "")).strip()
+        if val and val != "SEÇİNİZ":
+            return val
+            
+    return ""
+
+def is_question_visible(q_row, answers_map):
+    """
+    Sorunun gösterilip gösterilmeyeceğini denetler.
+    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '33,44' ve bagli_parent_deger = 'SAĞ,SAĞ').
+    """
+    parent_id_str = clean_val(q_row.get('bagli_parent_id'), default="0")
+    parent_target_str = clean_val(q_row.get('bagli_parent_deger'), default="")
+    
+    if parent_id_str in ["0", "", "nan", "none"]:
+        return True
+        
+    p_ids = [clean_val(x) for x in str(parent_id_str).split(',') if clean_val(x)]
+    p_targets = [clean_val(x) for x in str(parent_target_str).split(',') if clean_val(x)]
+    
+    if not p_ids:
+        return True
+        
+    for idx, pid in enumerate(p_ids):
+        # Eğer hedef sayısı ID sayısından azsa ilk hedefi varsayılan al (Örn: bagli_parent_deger = "SAĞ")
+        target = p_targets[idx] if idx < len(p_targets) else (p_targets[0] if p_targets else "")
+        target_norm = tr_norm(target)
+        
+        if not target_norm:
+            continue
+            
+        user_ans = get_ans_for_id(pid, answers_map)
+        user_ans_norm = tr_norm(user_ans)
+        
+        if not user_ans_norm:
+            return False
+            
+        # Hem tam eşleşme hem de metin içi kapsama kontrolü
+        if target_norm != user_ans_norm and target_norm not in user_ans_norm:
+            return False
+            
+    return True
+
 def get_data(worksheet_name):
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None and not df.empty:
-            # Pandas veri tipi uyuşmazlıklarını önlemek için tüm DataFrame'i esnek 'object' tipine çeviriyoruz
             df = df.astype(object)
             for col in df.columns:
                 df[col] = df[col].apply(lambda x: clean_val(x))
@@ -63,30 +128,6 @@ def tr_fix(text):
     for tr, en in mapping.items(): 
         text = str(text).replace(tr, en)
     return text
-
-def is_question_visible(q_row, answers_map):
-    """
-    Sorunun gösterilip gösterilmeyeceğini denetler.
-    Çoklu bağlı ID'leri destekler (örneğin bagli_parent_id = '3,4' ve bagli_parent_deger = 'SAĞ,SAĞ').
-    Tüm şartlar sağlandığında True döner.
-    """
-    parent_id_str = clean_val(q_row.get('bagli_parent_id'), default="0")
-    parent_target_str = clean_val(q_row.get('bagli_parent_deger'), default="")
-    
-    if parent_id_str == "0" or not parent_id_str:
-        return True
-        
-    p_ids = [x.strip() for x in parent_id_str.split(',') if x.strip()]
-    p_targets = [x.strip() for x in parent_target_str.split(',') if x.strip()]
-    
-    for idx, pid in enumerate(p_ids):
-        target = p_targets[idx] if idx < len(p_targets) else ""
-        ans = str(answers_map.get(pid, "")).strip()
-        
-        if target and ans.upper() != target.upper():
-            return False
-            
-    return True
 
 # ==========================================
 # 2. e-OKUL EXCEL PARSER & PDF
@@ -198,8 +239,8 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
-st.title("Konya Lisesi Öğrenci Bilgi Formu")
-tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Panel"])
+st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
+tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
 
 # --- TAB 1: ÖĞRENCİ FORMU ---
 with tab1:
@@ -268,11 +309,12 @@ with tab1:
                             q_metni = q['soru_metni']
                             q_type = q["soru_tipi"]
                             
+                            # Canlı görünürlük kontrolü
                             if not is_question_visible(q, st.session_state["answers"]):
                                 st.session_state["answers"][q_id] = ""
                                 continue
                                     
-                            default_val = st.session_state["answers"].get(q_id, "")
+                            default_val = get_ans_for_id(q_id, st.session_state["answers"])
                             raw_sec = clean_val(q.get("secenekler", ""), default="")
                             
                             if q_type == "coktan_secmeli":
@@ -315,7 +357,7 @@ with tab1:
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
-                                q_val = str(st.session_state["answers"].get(q_id, "")).strip()
+                                q_val = get_ans_for_id(q_id, st.session_state["answers"])
                                 q_type = q["soru_tipi"]
                                 
                                 if not is_question_visible(q, st.session_state["answers"]):
@@ -333,7 +375,6 @@ with tab1:
                                         validation_errors.append(f"❌ **{q_metni}** 10 haneli olmalıdır.")
                                     else:
                                         q_val = format_phone(clean_p)
-                                        st.session_state["answers"][q_id] = q_val
                                 
                                 new_row_data[q_metni] = q_val
                                 
@@ -359,7 +400,7 @@ with tab1:
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
 with tab2:
-    st.subheader("Panel")
+    st.subheader("Yönetici & Öğretmen Paneli")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
     if sifre == "admin123":
@@ -484,11 +525,11 @@ with tab2:
                 with st.form("yeni_soru_form"):
                     y_metin = st.text_input("Soru Metni:")
                     y_tip = st.selectbox("Soru Tipi:", ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"])
-                    y_secenekler = st.text_input("Seçenekler (Çoktan seçmeli veya çoklu seçim ise virgülle ayırın):", help="Örn: EVET,HAYIR veya DİYABET,ASTIM,YOK")
+                    y_secenekler = st.text_input("Seçenekler (Çoktan seçmeli veya çoklu seçim ise virgülle ayırın):", help="Örn: EVET,HAYIR veya SAĞ,VEFAT")
                     y_sira = st.number_input("Soru Sırası:", min_value=1, value=len(df_q) + 1 if not df_q.empty else 1)
                     
-                    y_parent_id = st.text_input("Bağlı Olduğu Üst Soru ID(leri):", help="Tek soru için örn: 3 | Birden fazla soru şartı için virgülle ayırın, örn: 3,4")
-                    y_parent_val = st.text_input("Şart Değer(leri):", help="Tek değer için örn: SAĞ | Birden fazla şart için virgülle ayırın, örn: SAĞ,SAĞ")
+                    y_parent_id = st.text_input("Bağlı Olduğu Üst Soru ID(leri):", help="Tek soru için örn: 33 | Çoklu soru için örn: 33,44")
+                    y_parent_val = st.text_input("Şart Değer(leri):", help="Tek değer için örn: SAĞ | Çoklu şart için örn: SAĞ,SAĞ")
                     
                     if st.form_submit_button("➕ Soruyu Kaydet"):
                         if y_metin:
@@ -528,8 +569,8 @@ with tab2:
                             d_tip = st.selectbox("Soru Tipi:", ["coktan_secmeli", "coklu_secim", "metin", "tc_no", "telefon"], index=d_tip_idx)
                             d_secenekler = st.text_input("Seçenekler:", value=clean_val(q_row.get('secenekler')))
                             d_sira = st.number_input("Soru Sırası:", value=int(clean_val(q_row.get('sira'), "1") or 1))
-                            d_parent_id = st.text_input("Bağlı Üst Soru ID(leri):", value=clean_val(q_row.get('bagli_parent_id')), help="Örn: 3,4")
-                            d_parent_val = st.text_input("Şart Değer(leri):", value=clean_val(q_row.get('bagli_parent_deger')), help="Örn: SAĞ,SAĞ")
+                            d_parent_id = st.text_input("Bağlı Üst Soru ID(leri):", value=clean_val(q_row.get('bagli_parent_id')), help="Örn: 33,44")
+                            d_parent_val = st.text_input("Şart Değer(leri):", value=clean_val(q_row.get('bagli_parent_deger')), help="Örn: SAĞ,SAĞ veya sadece SAĞ")
                             
                             btn_col1, btn_col2 = st.columns(2)
                             guncelle = btn_col1.form_submit_button("💾 Güncelle")
