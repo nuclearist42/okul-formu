@@ -14,7 +14,6 @@ st.set_page_config(page_title="Konya Lisesi Bilgi Toplama Sistemi", layout="wide
 conn_gs = st.connection("gsheets", type=GSheetsConnection)
 
 def clean_val(val, default=""):
-    """Pandas'tan gelen NaN, None, 0.0 gibi sorunlu verileri temizler."""
     if pd.isna(val) or val is None:
         return default
     val_str = str(val).strip()
@@ -25,11 +24,9 @@ def clean_val(val, default=""):
     return val_str
 
 def get_data(worksheet_name):
-    """Verileri Google Sheets'ten çeker. 10 dk (600sn) önbellek (cache) kullanır."""
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None and not df.empty:
-            # Tüm temel sütunlardaki float (9.0) sorunlarını temizle
             for col in ["numara", "sinif", "sube", "id", "sira"]:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: clean_val(x))
@@ -39,9 +36,8 @@ def get_data(worksheet_name):
         return pd.DataFrame()
 
 def save_data(worksheet_name, df):
-    """Verileri Google Sheets'e yazar ve önbelleği sıfırlar."""
     conn_gs.update(worksheet=worksheet_name, data=df)
-    st.cache_data.clear() # Sonraki okumalarda verilerin güncel gelmesi için cache temizlenir.
+    st.cache_data.clear()
 
 def sort_sinif_sube_key(item):
     m = re.search(r'(\d+)', str(item))
@@ -143,23 +139,25 @@ def generate_class_pdf(df_sube_merged, questions_df, sinif_sube_adi):
         pdf.cell(0, 7, tr_fix(f" OGR. NO: {st_row['numara']}  |  ADI SOYADI: {st_row['ad_soyad']}  |  DURUM: {st_row['FORM DURUMU']}"), ln=True, fill=True)
         pdf.ln(3)
         
-        ans_json = json.loads(st_row['yanitlar_json']) if pd.notna(st_row['yanitlar_json']) and st_row['yanitlar_json'] else {}
-
         if st_row['FORM DURUMU'] == "DOLDURDU":
             for _, q in questions_df.iterrows():
-                q_id = clean_val(q['id'])
+                q_title = q['soru_metni']
                 parent_id = clean_val(q.get('bagli_parent_id'), default="0")
                 parent_target = clean_val(q.get('bagli_parent_deger'), default="")
                 
                 if parent_id != "0" and parent_id != "":
-                    parent_ans = str(ans_json.get(parent_id, "")).strip()
-                    if parent_ans != parent_target:
-                        continue
+                    parent_q_rows = questions_df[questions_df['id'].astype(str) == parent_id]
+                    if not parent_q_rows.empty:
+                        parent_title = parent_q_rows.iloc[0]['soru_metni']
+                        parent_ans = str(st_row.get(parent_title, "")).strip()
+                        if parent_ans != parent_target:
+                            continue
                 
-                q_title = tr_fix(q['soru_metni'])
-                q_ans = tr_fix(ans_json.get(q_id, "-"))
+                q_ans = tr_fix(str(st_row.get(q_title, "-")).strip())
+                if q_ans.lower() in ["nan", "none", ""]: q_ans = "-"
+                
                 pdf.set_font("Helvetica", 'B', 8)
-                pdf.cell(75, 5, f"{q_title}:", border=0)
+                pdf.cell(75, 5, f"{tr_fix(q_title)}:", border=0)
                 pdf.set_font("Helvetica", size=8)
                 pdf.cell(0, 5, f" {q_ans}", border=0, ln=True)
             
@@ -185,7 +183,6 @@ with tab1:
     df_questions = get_data("sorular")
     
     if not df_questions.empty and "sira" in df_questions.columns:
-        # Soru sırasını sayısal olarak sırala
         df_questions["sira"] = pd.to_numeric(df_questions["sira"], errors='coerce').fillna(999)
         df_questions = df_questions.sort_values(by=["sira", "id"])
 
@@ -212,17 +209,21 @@ with tab1:
                     
                     df_yanitlar = get_data("yanitlar")
                     if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                        df_yanitlar = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
+                        df_yanitlar = pd.DataFrame(columns=["numara", "tarih"])
                     
                     mevcut_yanit = df_yanitlar[df_yanitlar["numara"] == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
                     
                     can_submit, is_update = True, False
                     eski_cevaplar = {}
+                    
                     if not mevcut_yanit.empty:
-                        try:
-                            eski_cevaplar = json.loads(mevcut_yanit.iloc[0]["yanitlar_json"])
-                        except Exception:
-                            eski_cevaplar = {}
+                        row = mevcut_yanit.iloc[0]
+                        for _, q in df_questions.iterrows():
+                            q_id = clean_val(q["id"])
+                            q_metni = q["soru_metni"]
+                            if q_metni in row:
+                                eski_cevaplar[q_id] = clean_val(row[q_metni])
+                        
                         st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuş.")
                         if st.checkbox("Yanıtlarımı güncellemek istiyorum."): is_update = True
                         else: can_submit = False
@@ -281,6 +282,9 @@ with tab1:
 
                         st.write("")
                         if st.button("💾 Formu Gönder / Kaydet", type="primary"):
+                            tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            new_row_data = {"numara": secilen_no, "tarih": tarih}
+                            
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
@@ -293,6 +297,7 @@ with tab1:
                                 if parent_id != "0" and parent_id != "":
                                     parent_ans = str(st.session_state["answers"].get(parent_id, "")).strip()
                                     if parent_ans != parent_target:
+                                        new_row_data[q_metni] = ""
                                         continue
                                 
                                 if q_type == "coktan_secmeli" and (q_val == "SEÇİNİZ" or not q_val):
@@ -305,22 +310,24 @@ with tab1:
                                     if len(clean_p) != 10:
                                         validation_errors.append(f"❌ **{q_metni}** 10 haneli olmalıdır.")
                                     else:
-                                        st.session_state["answers"][q_id] = format_phone(clean_p)
+                                        q_val = format_phone(clean_p)
+                                        st.session_state["answers"][q_id] = q_val
+                                
+                                new_row_data[q_metni] = q_val
                             
                             if validation_errors:
                                 for err in validation_errors: st.error(err)
                             else:
-                                tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                json_data = json.dumps(st.session_state["answers"], ensure_ascii=False)
-                                
                                 if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                                    df_yanitlar = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
+                                    df_yanitlar = pd.DataFrame(columns=["numara", "tarih"])
                                 
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].values:
-                                    df_yanitlar.loc[df_yanitlar["numara"] == secilen_no, ["yanitlar_json", "tarih"]] = [json_data, tarih]
+                                    idx_to_update = df_yanitlar[df_yanitlar["numara"] == secilen_no].index[0]
+                                    for col, val in new_row_data.items():
+                                        df_yanitlar.loc[idx_to_update, col] = val
                                 else:
-                                    new_row = pd.DataFrame([{"numara": secilen_no, "yanitlar_json": json_data, "tarih": tarih}])
-                                    df_yanitlar = pd.concat([df_yanitlar, new_row], ignore_index=True)
+                                    new_row_df = pd.DataFrame([new_row_data])
+                                    df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
                                 
                                 save_data("yanitlar", df_yanitlar)
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
@@ -339,7 +346,7 @@ with tab2:
             df_o = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
             
         if df_y.empty or "numara" not in df_y.columns:
-            df_y = pd.DataFrame(columns=["numara", "yanitlar_json", "tarih"])
+            df_y = pd.DataFrame(columns=["numara", "tarih"])
             
         if df_q.empty or "id" not in df_q.columns:
             df_q = pd.DataFrame(columns=["id", "soru_metni", "soru_tipi", "secenekler", "sira", "bagli_parent_id", "bagli_parent_deger"])
@@ -350,7 +357,7 @@ with tab2:
         
         merged_all = pd.merge(df_o, df_y, on='numara', how='left') if not df_o.empty else pd.DataFrame()
         if not merged_all.empty:
-            merged_all['FORM DURUMU'] = merged_all['yanitlar_json'].apply(lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI")
+            merged_all['FORM DURUMU'] = merged_all['tarih'].apply(lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI")
             merged_all['sinif_sube'] = merged_all['sinif'].astype(str) + "/" + merged_all['sube'].astype(str)
         
         sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
@@ -391,11 +398,6 @@ with tab2:
             if not merged_all.empty and not df_q.empty:
                 excel_rows = []
                 for idx, r in merged_all.iterrows():
-                    ans_dict = {}
-                    if pd.notna(r.get('yanitlar_json')) and str(r['yanitlar_json']).strip() not in ["", "nan"]:
-                        try: ans_dict = json.loads(r['yanitlar_json'])
-                        except Exception: pass
-                        
                     row_data = {
                         "SINIF/ŞUBE": r.get('sinif_sube', ''), 
                         "OKUL NO": r['numara'], 
@@ -403,8 +405,11 @@ with tab2:
                         "DURUM": r['FORM DURUMU']
                     }
                     for _, q in df_q.iterrows():
-                        q_id_clean = clean_val(q['id'])
-                        row_data[q['soru_metni']] = ans_dict.get(q_id_clean, "")
+                        q_metni = q['soru_metni']
+                        val = str(r.get(q_metni, "")).strip()
+                        if val.lower() in ["nan", "none"]: val = ""
+                        row_data[q_metni] = val
+                        
                     excel_rows.append(row_data)
                 
                 output = io.BytesIO()
