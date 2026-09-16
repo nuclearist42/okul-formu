@@ -54,6 +54,11 @@ def tr_norm(text):
 
 def get_ans_for_id(pid, answers_map):
     pid_str = clean_val(pid)
+    widget_key = f"widget_{pid_str}"
+    if widget_key in st.session_state:
+        val = str(st.session_state[widget_key]).strip()
+        if val and val != "SEÇİNİZ":
+            return val
     if answers_map and pid_str in answers_map:
         val = str(answers_map.get(pid_str, "")).strip()
         if val and val != "SEÇİNİZ":
@@ -209,15 +214,7 @@ def parse_and_save_eokul(file_buffer):
 # ==========================================
 # 3. STREAMLIT ARAYÜZÜ
 # ==========================================
-col_title, col_btn = st.columns([4, 1])
-with col_title:
-    st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
-with col_btn:
-    st.write("")
-    if st.button("🔄 Verileri Yenile"):
-        clear_all_caches()
-        st.success("Veriler yenilendi!")
-        st.rerun()
+st.title("🏫 Öğrenci Bilgi Formu & Raporlama Sistemi")
 
 tab1, tab2 = st.tabs(["📝 Öğrenci Formu", "⚙️ Yönetici & Öğretmen Paneli"])
 
@@ -280,62 +277,49 @@ with tab1:
                         if "answers" not in st.session_state or st.session_state.get("current_no") != secilen_no:
                             st.session_state["answers"] = eski_cevaplar.copy()
                             st.session_state["current_no"] = secilen_no
-                        
-                        # --- HIZLANDIRILMIŞ FORM YAPISI ---
-                        with st.form("ogrenci_bilgi_formu", clear_on_submit=False):
-                            form_input_values = {}
                             
-                            for _, q in df_questions.iterrows():
-                                q_id = clean_val(q["id"])
-                                q_metni = q['soru_metni']
-                                q_type = q["soru_tipi"]
+                        validation_errors = []
+                        
+                        for _, q in df_questions.iterrows():
+                            q_id = clean_val(q["id"])
+                            q_metni = q['soru_metni']
+                            q_type = q["soru_tipi"]
+                            
+                            # Canlı görünürlük kontrolü
+                            if not is_question_visible(q, st.session_state["answers"]):
+                                st.session_state["answers"][q_id] = ""
+                                continue
+                                    
+                            default_val = get_ans_for_id(q_id, st.session_state["answers"])
+                            raw_sec = clean_val(q.get("secenekler", ""), default="")
+                            
+                            if q_type == "coktan_secmeli":
+                                opts = ["SEÇİNİZ"] + [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
+                                idx = opts.index(default_val) if default_val in opts else 0
+                                selected = st.selectbox(f"📌 {q_metni}", opts, index=idx, key=f"widget_{q_id}")
+                                st.session_state["answers"][q_id] = selected
                                 
-                                # Görünürlük kontrolü
-                                if not is_question_visible(q, st.session_state["answers"]):
-                                    form_input_values[q_id] = ""
-                                    continue
-                                        
-                                default_val = get_ans_for_id(q_id, st.session_state["answers"])
-                                raw_sec = clean_val(q.get("secenekler", ""), default="")
+                            elif q_type == "coklu_secim":
+                                opts = [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
+                                def_list = [x.strip() for x in default_val.split(",") if x.strip()] if default_val else []
+                                valid_def_list = [x for x in def_list if x in opts]
+                                sel_list = st.multiselect(f"📌 {q_metni}", opts, default=valid_def_list, key=f"widget_{q_id}")
+                                st.session_state["answers"][q_id] = ", ".join(sel_list)
                                 
-                                # Eğer soru bir ÜST SORU ise (Anne Sağ/Ölü, Anne-Baba Birlikte/Ayrı vb.) form dışı re-render tetiklenebilir
-                                is_parent_q = clean_val(q['id']) in [clean_id(x) for x in df_questions['bagli_parent_id'].astype(str)]
+                            elif q_type == "tc_no":
+                                val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=11, key=f"widget_{q_id}")
+                                st.session_state["answers"][q_id] = val
                                 
-                                if q_type == "coktan_secmeli":
-                                    opts = ["SEÇİNİZ"] + [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
-                                    idx = opts.index(default_val) if default_val in opts else 0
-                                    selected = st.selectbox(f"📌 {q_metni}", opts, index=idx, key=f"widget_{q_id}")
-                                    form_input_values[q_id] = selected
-                                    st.session_state["answers"][q_id] = selected
-                                    
-                                elif q_type == "coklu_secim":
-                                    opts = [opt.strip() for opt in raw_sec.split(",") if opt.strip()]
-                                    def_list = [x.strip() for x in default_val.split(",") if x.strip()] if default_val else []
-                                    valid_def_list = [x for x in def_list if x in opts]
-                                    sel_list = st.multiselect(f"📌 {q_metni}", opts, default=valid_def_list, key=f"widget_{q_id}")
-                                    form_input_values[q_id] = ", ".join(sel_list)
-                                    st.session_state["answers"][q_id] = ", ".join(sel_list)
-                                    
-                                elif q_type == "tc_no":
-                                    val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=11, key=f"widget_{q_id}")
-                                    form_input_values[q_id] = val
-                                    st.session_state["answers"][q_id] = val
-                                    
-                                elif q_type == "telefon":
-                                    val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=14, key=f"widget_{q_id}")
-                                    form_input_values[q_id] = val
-                                    st.session_state["answers"][q_id] = val
-                                    
-                                else:
-                                    val = st.text_input(f"📌 {q_metni}", value=default_val, key=f"widget_{q_id}")
-                                    form_input_values[q_id] = val
-                                    st.session_state["answers"][q_id] = val
+                            elif q_type == "telefon":
+                                val = st.text_input(f"📌 {q_metni}", value=default_val, max_chars=14, key=f"widget_{q_id}")
+                                st.session_state["answers"][q_id] = val
+                                
+                            else:
+                                val = st.text_input(f"📌 {q_metni}", value=default_val, key=f"widget_{q_id}")
+                                st.session_state["answers"][q_id] = val
 
-                            st.write("")
-                            submit_btn = st.form_submit_button("💾 Formu Gönder / Kaydet", type="primary")
-
-                        if submit_btn:
-                            validation_errors = []
+                        st.write("")
+                        if st.button("💾 Formu Gönder / Kaydet", type="primary"):
                             tarih = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
                             new_row_data = {
@@ -349,10 +333,10 @@ with tab1:
                             for _, q in df_questions.iterrows():
                                 q_id = clean_val(q["id"])
                                 q_metni = q['soru_metni']
-                                q_val = form_input_values.get(q_id, "")
+                                q_val = get_ans_for_id(q_id, st.session_state["answers"])
                                 q_type = q["soru_tipi"]
                                 
-                                if not is_question_visible(q, form_input_values):
+                                if not is_question_visible(q, st.session_state["answers"]):
                                     new_row_data[q_metni] = ""
                                     continue
                                 
@@ -390,12 +374,18 @@ with tab1:
                                 save_data("yanitlar", df_yanitlar)
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
-# --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANATELİ ---
+# --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
 with tab2:
     st.subheader("Yönetici & Öğretmen Paneli")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
     if sifre == "admin123":
+        # Verileri yenile butonu sadece yönetici paneline alındı
+        if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
+            clear_all_caches()
+            st.success("Önbellek temizlendi, veriler güncellendi!")
+            st.rerun()
+
         df_o = get_data("ogrenciler")
         df_y = get_data("yanitlar")
         df_q = get_data("sorular")
