@@ -25,18 +25,23 @@ def clean_val(val, default=""):
     return val_str
 
 def get_data(worksheet_name):
+    """Verileri Google Sheets'ten çeker. 10 dk (600sn) önbellek (cache) kullanır."""
     try:
-        df = conn_gs.read(worksheet=worksheet_name, ttl=0)
+        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
         if df is not None and not df.empty:
-            if "numara" in df.columns:
-                df["numara"] = df["numara"].apply(lambda x: clean_val(x))
-            return df
+            # Tüm temel sütunlardaki float (9.0) sorunlarını temizle
+            for col in ["numara", "sinif", "sube", "id", "sira"]:
+                if col in df.columns:
+                    df[col] = df[col].apply(lambda x: clean_val(x))
+            return df.copy()
         return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 def save_data(worksheet_name, df):
+    """Verileri Google Sheets'e yazar ve önbelleği sıfırlar."""
     conn_gs.update(worksheet=worksheet_name, data=df)
+    st.cache_data.clear() # Sonraki okumalarda verilerin güncel gelmesi için cache temizlenir.
 
 def sort_sinif_sube_key(item):
     m = re.search(r'(\d+)', str(item))
@@ -110,8 +115,8 @@ def parse_and_save_eokul(file_buffer):
                 if numara_str.isdigit() and val_ad and val_ad.lower() not in ["adı", "ad", "öğrenci no"]:
                     all_students.append({
                         "numara": numara_str,
-                        "sinif": c_sinif if c_sinif else "Tanımsız",
-                        "sube": c_sube if c_sube else "Tanımsız",
+                        "sinif": clean_val(c_sinif) if c_sinif else "Tanımsız",
+                        "sube": clean_val(c_sube) if c_sube else "Tanımsız",
                         "ogretmen": c_ogretmen if c_ogretmen else "Tanımlanmadı",
                         "ad_soyad": f"{val_ad} {val_soyad}".strip()
                     })
@@ -180,6 +185,8 @@ with tab1:
     df_questions = get_data("sorular")
     
     if not df_questions.empty and "sira" in df_questions.columns:
+        # Soru sırasını sayısal olarak sırala
+        df_questions["sira"] = pd.to_numeric(df_questions["sira"], errors='coerce').fillna(999)
         df_questions = df_questions.sort_values(by=["sira", "id"])
 
     if df_students.empty or "numara" not in df_students.columns:
@@ -338,6 +345,7 @@ with tab2:
             df_q = pd.DataFrame(columns=["id", "soru_metni", "soru_tipi", "secenekler", "sira", "bagli_parent_id", "bagli_parent_deger"])
         else:
             if "sira" in df_q.columns: 
+                df_q["sira"] = pd.to_numeric(df_q["sira"], errors='coerce').fillna(999)
                 df_q = df_q.sort_values(by=["sira", "id"])
         
         merged_all = pd.merge(df_o, df_y, on='numara', how='left') if not df_o.empty else pd.DataFrame()
