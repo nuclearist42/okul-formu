@@ -1,7 +1,4 @@
 import streamlit as st
-st.warning("Sistem geçici olarak kapatılmıştır. en kısa zamanda yeniden açılacaktır.")
-st.stop()
-import streamlit as st
 import pandas as pd
 import datetime
 import json
@@ -267,26 +264,23 @@ with tab1:
                     mevcut_yanit = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
                     
                     can_submit, is_update = True, False
-                    eski_cevaplar = {}
                     
+                    # GÜVENLİK GÜNCELLEMESİ (KÖR GÜNCELLEME)
                     if not mevcut_yanit.empty:
-                        row = mevcut_yanit.iloc[0]
-                        for _, q in df_questions.iterrows():
-                            q_id = clean_val(q["id"])
-                            q_metni = q["soru_metni"]
-                            if q_metni in row:
-                                eski_cevaplar[q_id] = clean_val(row[q_metni])
-                        
-                        st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuş.")
-                        if st.checkbox("Yanıtlarımı güncellemek istiyorum."): is_update = True
-                        else: can_submit = False
+                        st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuştur.")
+                        if st.checkbox("Yanıtlarımı güncellemek istiyorum."): 
+                            is_update = True
+                            st.info("🔒 **Gizlilik ve Güvenlik Bildirimi:** Kişisel verilerinizin gizliliği gereği daha önce girmiş olduğunuz bilgiler ekranda gösterilmemektedir. Bilgilerinizi güncellemek için lütfen aşağıdaki alanları sıfırdan doldurunuz. Göndereceğiniz yeni veriler eski kaydınızın üzerine yazılacaktır.")
+                        else: 
+                            can_submit = False
                     
                     if can_submit:
                         st.divider()
                         st.subheader("Form Soruları")
                         
+                        # Form her açıldığında veya öğrenci değiştiğinde içi tamamen boş başlar
                         if "answers" not in st.session_state or st.session_state.get("current_no") != secilen_no:
-                            st.session_state["answers"] = eski_cevaplar.copy()
+                            st.session_state["answers"] = {}
                             st.session_state["current_no"] = secilen_no
                             
                         validation_errors = []
@@ -374,6 +368,8 @@ with tab1:
                                     df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                                 
                                 df_yanitlar = df_yanitlar.astype(object)
+                                
+                                # Eğer güncelleme yapılıyorsa Google Sheets üzerindeki mevcut satırın üzerine yazar
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].astype(str).values:
                                     idx_to_update = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no].index[0]
                                     for col, val in new_row_data.items():
@@ -383,6 +379,7 @@ with tab1:
                                     df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
                                 
                                 save_data("yanitlar", df_yanitlar)
+                                
                                 # --- OTOMATİK İSTATİSTİK VE EKSİK GÜNCELLEME ---
                                 try:
                                     if not df_students.empty:
@@ -416,7 +413,6 @@ with tab1:
                                     pass
                                 # ---------------------------------------------
 
-                                
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
@@ -425,7 +421,6 @@ with tab2:
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
     if sifre == "bettiyin":
-        # Verileri yenile butonu sadece yönetici paneline alındı
         if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
             clear_all_caches()
             st.success("Önbellek temizlendi, veriler güncellendi!")
