@@ -1,4 +1,7 @@
 import streamlit as st
+st.warning("Sistem geçici olarak kapatılmıştır. en kısa zamanda yeniden açılacaktır.")
+st.stop()
+import streamlit as st
 import pandas as pd
 import datetime
 import json
