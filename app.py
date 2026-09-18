@@ -265,7 +265,7 @@ with tab1:
                     
                     can_submit, is_update = True, False
                     
-                    # GÜVENLİK GÜNCELLEMESİ (KÖR GÜNCELLEME)
+                    # KÖR GÜNCELLEME
                     if not mevcut_yanit.empty:
                         st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuştur.")
                         if st.checkbox("Yanıtlarımı güncellemek istiyorum."): 
@@ -278,7 +278,6 @@ with tab1:
                         st.divider()
                         st.subheader("Form Soruları")
                         
-                        # Form her açıldığında veya öğrenci değiştiğinde içi tamamen boş başlar
                         if "answers" not in st.session_state or st.session_state.get("current_no") != secilen_no:
                             st.session_state["answers"] = {}
                             st.session_state["current_no"] = secilen_no
@@ -290,7 +289,6 @@ with tab1:
                             q_metni = q['soru_metni']
                             q_type = q["soru_tipi"]
                             
-                            # Canlı görünürlük kontrolü
                             if not is_question_visible(q, st.session_state["answers"]):
                                 st.session_state["answers"][q_id] = ""
                                 continue
@@ -369,7 +367,6 @@ with tab1:
                                 
                                 df_yanitlar = df_yanitlar.astype(object)
                                 
-                                # Eğer güncelleme yapılıyorsa Google Sheets üzerindeki mevcut satırın üzerine yazar
                                 if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].astype(str).values:
                                     idx_to_update = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no].index[0]
                                     for col, val in new_row_data.items():
@@ -394,14 +391,18 @@ with tab1:
                                         )
                                         merged_auto['sinif_sube'] = merged_auto['sinif'].astype(str) + "/" + merged_auto['sube'].astype(str)
                                         
-                                        # İstatistikleri hesapla ve gönder
+                                        # Öğretmen eşleştirmesi
+                                        ogretmen_map = merged_auto.groupby('sinif_sube')['ogretmen'].first()
+                                        
+                                        # İstatistikleri hesapla
                                         stats_df = merged_auto.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
                                         if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
                                         if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
                                         stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
-                                        stats_df['TAMAMLANMA %'] = ((stats_df['DOLDURDU'] / stats_df['TOPLAM']) * 100).round(1)
+                                        stats_df['SINIF ÖĞRETMENİ'] = stats_df.index.map(ogretmen_map)
                                         
-                                        stats_to_export = stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'TAMAMLANMA %']].reset_index()
+                                        # E sütununa 'SINIF ÖĞRETMENİ' yazdırılıyor
+                                        stats_to_export = stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'SINIF ÖĞRETMENİ']].reset_index()
                                         conn_gs.update(worksheet="istatistik", data=stats_to_export)
                                         
                                         # Doldurmayanları hesapla ve gönder
@@ -477,12 +478,14 @@ with tab2:
                 
                 st.divider()
                 st.markdown("#### Sınıf/Şube Bazında Doldurma Durumları")
+                ogretmen_map = merged_all.groupby('sinif_sube')['ogretmen'].first()
                 stats_df = merged_all.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
                 if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
                 if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
                 stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
-                stats_df['TAMAMLANMA %'] = ((stats_df['DOLDURDU'] / stats_df['TOPLAM']) * 100).round(1)
-                st.dataframe(stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'TAMAMLANMA %']], use_container_width=True)
+                stats_df['SINIF ÖĞRETMENİ'] = stats_df.index.map(ogretmen_map)
+                
+                st.dataframe(stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'SINIF ÖĞRETMENİ']], use_container_width=True)
                 
                 with st.expander("🚨 Formu Henüz Doldurmayan Öğrenciler Listesi"):
                     doldurmayanlar = merged_all[merged_all['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
