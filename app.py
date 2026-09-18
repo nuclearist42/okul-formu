@@ -152,6 +152,37 @@ def mask_name(name):
     words = str(name).strip().split()
     return " ".join([w[:2] + "*" * (len(w) - 2) if len(w) > 2 else w[0] + "*" for w in words])
 
+def sync_stats_to_gsheet():
+    try:
+        df_students = get_data("ogrenciler")
+        df_yanitlar = get_data("yanitlar")
+        if not df_students.empty:
+            if not df_yanitlar.empty:
+                cols_to_use = ['numara'] + [c for c in df_yanitlar.columns if c not in df_students.columns]
+                merged_auto = pd.merge(df_students, df_yanitlar[cols_to_use], on='numara', how='left')
+            else:
+                merged_auto = df_students.copy()
+            
+            merged_auto['FORM DURUMU'] = merged_auto.get('tarih', pd.Series([None]*len(merged_auto))).apply(
+                lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI"
+            )
+            merged_auto['sinif_sube'] = merged_auto['sinif'].astype(str) + "/" + merged_auto['sube'].astype(str)
+            
+            ogretmen_map = merged_auto.groupby('sinif_sube')['ogretmen'].first()
+            stats_df = merged_auto.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
+            if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
+            if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
+            stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
+            stats_df['SINIF ÖĞRETMENİ'] = stats_df.index.map(ogretmen_map)
+            
+            stats_to_export = stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'SINIF ÖĞRETMENİ']].reset_index()
+            conn_gs.update(worksheet="istatistik", data=stats_to_export)
+            
+            doldurmayanlar_df = merged_auto[merged_auto['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
+            conn_gs.update(worksheet="doldurmayanlar", data=doldurmayanlar_df)
+    except Exception:
+        pass
+
 # ==========================================
 # 2. e-OKUL EXCEL PARSER
 # ==========================================
@@ -265,7 +296,6 @@ with tab1:
                     
                     can_submit, is_update = True, False
                     
-                    # KÖR GÜNCELLEME
                     if not mevcut_yanit.empty:
                         st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuştur.")
                         if st.checkbox("Yanıtlarımı güncellemek istiyorum."): 
@@ -376,44 +406,8 @@ with tab1:
                                     df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
                                 
                                 save_data("yanitlar", df_yanitlar)
-                                
-                                # --- OTOMATİK İSTATİSTİK VE EKSİK GÜNCELLEME ---
-                                try:
-                                    if not df_students.empty:
-                                        if not df_yanitlar.empty:
-                                            cols_to_use = ['numara'] + [c for c in df_yanitlar.columns if c not in df_students.columns]
-                                            merged_auto = pd.merge(df_students, df_yanitlar[cols_to_use], on='numara', how='left')
-                                        else:
-                                            merged_auto = df_students.copy()
-                                        
-                                        merged_auto['FORM DURUMU'] = merged_auto.get('tarih', pd.Series([None]*len(merged_auto))).apply(
-                                            lambda x: "DOLDURDU" if pd.notna(x) and str(x).strip() not in ["", "nan"] else "DOLDURMADI"
-                                        )
-                                        merged_auto['sinif_sube'] = merged_auto['sinif'].astype(str) + "/" + merged_auto['sube'].astype(str)
-                                        
-                                        # Öğretmen eşleştirmesi
-                                        ogretmen_map = merged_auto.groupby('sinif_sube')['ogretmen'].first()
-                                        
-                                        # İstatistikleri hesapla
-                                        stats_df = merged_auto.groupby('sinif_sube')['FORM DURUMU'].value_counts().unstack(fill_value=0)
-                                        if 'DOLDURDU' not in stats_df.columns: stats_df['DOLDURDU'] = 0
-                                        if 'DOLDURMADI' not in stats_df.columns: stats_df['DOLDURMADI'] = 0
-                                        stats_df['TOPLAM'] = stats_df['DOLDURDU'] + stats_df['DOLDURMADI']
-                                        stats_df['SINIF ÖĞRETMENİ'] = stats_df.index.map(ogretmen_map)
-                                        
-                                        # E sütununa 'SINIF ÖĞRETMENİ' yazdırılıyor
-                                        stats_to_export = stats_df[['TOPLAM', 'DOLDURDU', 'DOLDURMADI', 'SINIF ÖĞRETMENİ']].reset_index()
-                                        conn_gs.update(worksheet="istatistik", data=stats_to_export)
-                                        
-                                        # Doldurmayanları hesapla ve gönder
-                                        doldurmayanlar_df = merged_auto[merged_auto['FORM DURUMU'] == 'DOLDURMADI'][['sinif_sube', 'numara', 'ad_soyad', 'ogretmen']]
-                                        conn_gs.update(worksheet="doldurmayanlar", data=doldurmayanlar_df)
-                                        
-                                        clear_all_caches()
-                                except Exception:
-                                    pass
-                                # ---------------------------------------------
-
+                                sync_stats_to_gsheet()
+                                clear_all_caches()
                                 st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
@@ -424,7 +418,9 @@ with tab2:
     if sifre == "bettiyin":
         if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
             clear_all_caches()
-            st.success("Önbellek temizlendi, veriler güncellendi!")
+            sync_stats_to_gsheet()
+            clear_all_caches()
+            st.success("✅ Önbellek temizlendi ve Google Sheets sayfaları (istatistik/doldurmayanlar) güncellendi!")
             st.rerun()
 
         df_o = get_data("ogrenciler")
@@ -541,6 +537,8 @@ with tab2:
                             if st.button(f"🗑️ {sil_no} Numaralı Öğrencinin Yanıtlarını Tamamen Sil", type="primary"):
                                 df_y_updated = df_y_del[df_y_del["numara"].astype(str) != sil_no]
                                 save_data("yanitlar", df_y_updated)
+                                sync_stats_to_gsheet()
+                                clear_all_caches()
                                 st.success(f"✅ {sil_no} numaralı öğrencinin yanıtları başarıyla silindi!")
                                 st.rerun()
                     else:
