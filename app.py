@@ -131,6 +131,11 @@ def get_data(worksheet_name):
     return pd.DataFrame()
 
 def save_data(worksheet_name, df):
+    # Güvenlik Kilidi: Eğer 'sorular' veya 'ogrenciler' tablosu boş ise korumaya al
+    if worksheet_name in ["sorular", "ogrenciler"] and df.empty:
+        st.error(f"⚠️ HATA: {worksheet_name} tablosunun tamamen silinmesini önlemek için işlem durduruldu!")
+        return
+        
     conn_gs.update(worksheet=worksheet_name, data=df)
     clear_all_caches()
 
