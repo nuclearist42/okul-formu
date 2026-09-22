@@ -106,10 +106,10 @@ def clear_all_caches():
         if key.startswith("backup_df_"):
             del st.session_state[key]
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_gsheet_cached(worksheet_name):
     try:
-        df = conn_gs.read(worksheet=worksheet_name, ttl=600)
+        df = conn_gs.read(worksheet=worksheet_name, ttl=300)
         if df is not None:
             df = df.astype(object)
             for col in df.columns:
@@ -123,21 +123,45 @@ def get_data(worksheet_name):
     df = fetch_gsheet_cached(worksheet_name)
     ss_key = f"backup_df_{worksheet_name}"
     
-    if df is not None:
+    if df is not None and not df.empty:
         st.session_state[ss_key] = df
         return df.copy()
     elif ss_key in st.session_state:
         return st.session_state[ss_key].copy()
     return pd.DataFrame()
 
-def save_data(worksheet_name, df):
-    # Güvenlik Kilidi: Eğer 'sorular' veya 'ogrenciler' tablosu boş ise korumaya al
-    if worksheet_name in ["sorular", "ogrenciler"] and df.empty:
-        st.error(f"⚠️ HATA: {worksheet_name} tablosunun tamamen silinmesini önlemek için işlem durduruldu!")
-        return
+def get_data_live(worksheet_name):
+    """Kritik yazma işlemlerinden önce Google Sheets'ten önbelleksiz canlı veri çeker."""
+    try:
+        df = conn_gs.read(worksheet=worksheet_name, ttl=0)
+        if df is not None:
+            df = df.astype(object)
+            for col in df.columns:
+                df[col] = df[col].apply(lambda x: clean_val(x))
+            return df.copy()
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+def save_data(worksheet_name, df, allow_delete=False):
+    """Gelişmiş güvenlik kilitli kaydetme fonksiyonu."""
+    if df.empty and worksheet_name in ["yanitlar", "ogrenciler", "sorular"]:
+        st.error(f"🚨 **GÜVENLİK KİLİDİ**: {worksheet_name} tablosu boş olduğu için veri kaybını önlemek amacıyla işlem engellendi!")
+        return False
         
-    conn_gs.update(worksheet=worksheet_name, data=df)
-    clear_all_caches()
+    if worksheet_name == "yanitlar" and not allow_delete:
+        existing_df = get_data_live("yanitlar")
+        if not existing_df.empty and len(df) < len(existing_df):
+            st.error("🚨 **GÜVENLİK KİLİDİ**: Kaydedilmeye çalışılan yanıt sayısı mevcut veriden az! Yanıt silinmesini önlemek için işlem durduruldu.")
+            return False
+
+    try:
+        conn_gs.update(worksheet=worksheet_name, data=df)
+        clear_all_caches()
+        return True
+    except Exception as e:
+        st.error(f"❌ Google Sheets güncelleme hatası: {e}")
+        return False
 
 def sort_sinif_sube_key(item):
     m = re.search(r'(\d+)', str(item))
@@ -159,8 +183,8 @@ def mask_name(name):
 
 def sync_stats_to_gsheet():
     try:
-        df_students = get_data("ogrenciler")
-        df_yanitlar = get_data("yanitlar")
+        df_students = get_data_live("ogrenciler")
+        df_yanitlar = get_data_live("yanitlar")
         if not df_students.empty:
             if not df_yanitlar.empty:
                 cols_to_use = ['numara'] + [c for c in df_yanitlar.columns if c not in df_students.columns]
@@ -244,7 +268,7 @@ def parse_and_save_eokul(file_buffer):
     
     if all_students:
         df_new = pd.DataFrame(all_students)
-        save_data("ogrenciler", df_new)
+        save_data("ogrenciler", df_new, allow_delete=True)
     return len(all_students)
 
 # ==========================================
@@ -293,11 +317,9 @@ with tab1:
                     secilen_no = clean_val(secilen_ogrenci.split(" - ")[0])
                     student_row = filtered[filtered["numara"].astype(str) == secilen_no].iloc[0]
                     
-                    df_yanitlar = get_data("yanitlar")
-                    if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                        df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
+                    df_yanitlar_check = get_data_live("yanitlar")
                     
-                    mevcut_yanit = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no] if not df_yanitlar.empty else pd.DataFrame()
+                    mevcut_yanit = df_yanitlar_check[df_yanitlar_check["numara"].astype(str) == secilen_no] if not df_yanitlar_check.empty and "numara" in df_yanitlar_check.columns else pd.DataFrame()
                     
                     can_submit, is_update = True, False
                     
@@ -397,30 +419,36 @@ with tab1:
                             if validation_errors:
                                 for err in validation_errors: st.error(err)
                             else:
-                                if df_yanitlar.empty or "numara" not in df_yanitlar.columns:
-                                    df_yanitlar = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
+                                # GÜVENLİK: Yanıtları kaydetmeden önce Sheets'ten CANLI okur
+                                df_yanitlar_live = get_data_live("yanitlar")
                                 
-                                df_yanitlar = df_yanitlar.astype(object)
+                                if df_yanitlar_live.empty or "numara" not in df_yanitlar_live.columns:
+                                    df_yanitlar_live = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
                                 
-                                if is_update and not df_yanitlar.empty and secilen_no in df_yanitlar["numara"].astype(str).values:
-                                    idx_to_update = df_yanitlar[df_yanitlar["numara"].astype(str) == secilen_no].index[0]
+                                df_yanitlar_live = df_yanitlar_live.astype(object)
+                                
+                                if is_update and not df_yanitlar_live.empty and secilen_no in df_yanitlar_live["numara"].astype(str).values:
+                                    idx_to_update = df_yanitlar_live[df_yanitlar_live["numara"].astype(str) == secilen_no].index[0]
                                     for col, val in new_row_data.items():
-                                        df_yanitlar.at[idx_to_update, col] = val
+                                        df_yanitlar_live.at[idx_to_update, col] = val
                                 else:
                                     new_row_df = pd.DataFrame([new_row_data])
-                                    df_yanitlar = pd.concat([df_yanitlar, new_row_df], ignore_index=True)
+                                    df_yanitlar_live = pd.concat([df_yanitlar_live, new_row_df], ignore_index=True)
                                 
-                                save_data("yanitlar", df_yanitlar)
-                                sync_stats_to_gsheet()
-                                clear_all_caches()
-                                st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
+                                success = save_data("yanitlar", df_yanitlar_live)
+                                if success:
+                                    sync_stats_to_gsheet()
+                                    clear_all_caches()
+                                    st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
-with tab2:
+with tab1 if False else tab2:
     st.subheader("Panel")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
     
-    if sifre == "bettiyin":
+    admin_pass = st.secrets.get("ADMIN_PASSWORD", "bettiyin")
+    
+    if sifre == admin_pass:
         if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
             clear_all_caches()
             sync_stats_to_gsheet()
@@ -531,7 +559,7 @@ with tab2:
                     st.rerun()
 
             with st.expander("🗑️ Doldurulmuş Öğrenci Form Yanıtını Sil / Sıfırla", expanded=True):
-                df_y_del = get_data("yanitlar")
+                df_y_del = get_data_live("yanitlar")
                 if not df_y_del.empty and "numara" in df_y_del.columns:
                     df_valid_y = df_y_del[df_y_del["numara"].astype(str).str.strip() != ""].copy()
                     if not df_valid_y.empty:
@@ -541,7 +569,7 @@ with tab2:
                             sil_no = clean_val(silinecek_ogrenci.split(" - ")[0])
                             if st.button(f"🗑️ {sil_no} Numaralı Öğrencinin Yanıtlarını Tamamen Sil", type="primary"):
                                 df_y_updated = df_y_del[df_y_del["numara"].astype(str) != sil_no]
-                                save_data("yanitlar", df_y_updated)
+                                save_data("yanitlar", df_y_updated, allow_delete=True)
                                 sync_stats_to_gsheet()
                                 clear_all_caches()
                                 st.success(f"✅ {sil_no} numaralı öğrencinin yanıtları başarıyla silindi!")
@@ -620,7 +648,7 @@ with tab2:
                                 "bagli_parent_deger": clean_val(y_parent_val)
                             }
                             df_q_updated = pd.concat([df_q, pd.DataFrame([new_q])], ignore_index=True)
-                            save_data("sorular", df_q_updated)
+                            save_data("sorular", df_q_updated, allow_delete=True)
                             st.success("✅ Yeni soru kaydedildi!")
                             st.rerun()
                         else:
@@ -669,13 +697,13 @@ with tab2:
                                     df_q.at[q_idx, 'bagli_parent_id'] = clean_id(d_p_ids)
                                     df_q.at[q_idx, 'bagli_parent_deger'] = str(d_parent_val)
                                     
-                                    save_data("sorular", df_q)
+                                    save_data("sorular", df_q, allow_delete=True)
                                     st.success("✅ Soru güncellendi!")
                                     st.rerun()
                                 
                             if sil:
                                 df_q_updated = df_q[df_q['id'].apply(lambda x: clean_val(x)) != secilen_q_id]
-                                save_data("sorular", df_q_updated)
+                                save_data("sorular", df_q_updated, allow_delete=True)
                                 st.success("🗑️ Soru silindi!")
                                 st.rerun()
                     else:
