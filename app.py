@@ -131,7 +131,7 @@ def get_data(worksheet_name):
     return pd.DataFrame()
 
 def get_data_live(worksheet_name):
-    """Kritik yazma işlemlerinden önce Google Sheets'ten önbelleksiz canlı veri çeker."""
+    """Bağlantı koparsa boş tablo dönmez, güvenliği tetiklemek için None döner."""
     try:
         df = conn_gs.read(worksheet=worksheet_name, ttl=0)
         if df is not None:
@@ -139,20 +139,27 @@ def get_data_live(worksheet_name):
             for col in df.columns:
                 df[col] = df[col].apply(lambda x: clean_val(x))
             return df.copy()
-    except Exception:
-        pass
-    return pd.DataFrame()
+    except Exception as e:
+        st.error(f"⚠️ Google Sheets bağlantı hatası: {e}")
+        return None
+    return None
 
 def save_data(worksheet_name, df, allow_delete=False):
-    """Gelişmiş güvenlik kilitli kaydetme fonksiyonu."""
+    """Mutlak Güvenlik Kilitli Kaydetme Fonksiyonu"""
     if df.empty and worksheet_name in ["yanitlar", "ogrenciler", "sorular"]:
         st.error(f"🚨 **GÜVENLİK KİLİDİ**: {worksheet_name} tablosu boş olduğu için veri kaybını önlemek amacıyla işlem engellendi!")
         return False
         
     if worksheet_name == "yanitlar" and not allow_delete:
         existing_df = get_data_live("yanitlar")
+        
+        # Hata anında üzerine yazmayı mutlak reddet
+        if existing_df is None:
+            st.error("🚨 **GÜVENLİK KİLİDİ**: Google Sheets canlı verisine ulaşılamadı. Veri kaybını önlemek için kaydetme DURDURULDU! Lütfen az sonra tekrar deneyin.")
+            return False
+            
         if not existing_df.empty and len(df) < len(existing_df):
-            st.error("🚨 **GÜVENLİK KİLİDİ**: Kaydedilmeye çalışılan yanıt sayısı mevcut veriden az! Yanıt silinmesini önlemek için işlem durduruldu.")
+            st.error(f"🚨 **GÜVENLİK KİLİDİ**: Kaydedilecek yanıt sayısı ({len(df)}), mevcut veriden ({len(existing_df)}) az! Yanıt silinmesini önlemek için işlem durduruldu.")
             return False
 
     try:
@@ -185,6 +192,10 @@ def sync_stats_to_gsheet():
     try:
         df_students = get_data_live("ogrenciler")
         df_yanitlar = get_data_live("yanitlar")
+        
+        if df_students is None or df_yanitlar is None:
+            return
+            
         if not df_students.empty:
             if not df_yanitlar.empty:
                 cols_to_use = ['numara'] + [c for c in df_yanitlar.columns if c not in df_students.columns]
@@ -319,7 +330,9 @@ with tab1:
                     
                     df_yanitlar_check = get_data_live("yanitlar")
                     
-                    mevcut_yanit = df_yanitlar_check[df_yanitlar_check["numara"].astype(str) == secilen_no] if not df_yanitlar_check.empty and "numara" in df_yanitlar_check.columns else pd.DataFrame()
+                    mevcut_yanit = pd.DataFrame()
+                    if df_yanitlar_check is not None and not df_yanitlar_check.empty and "numara" in df_yanitlar_check.columns:
+                        mevcut_yanit = df_yanitlar_check[df_yanitlar_check["numara"].astype(str) == secilen_no]
                     
                     can_submit, is_update = True, False
                     
@@ -419,8 +432,11 @@ with tab1:
                             if validation_errors:
                                 for err in validation_errors: st.error(err)
                             else:
-                                # GÜVENLİK: Yanıtları kaydetmeden önce Sheets'ten CANLI okur
                                 df_yanitlar_live = get_data_live("yanitlar")
+                                
+                                if df_yanitlar_live is None:
+                                    st.error("❌ Veritabanı bağlantısında anlık bir aksama oldu. Yanıtınızın kaybolmaması için işlem durduruldu. Lütfen 'Formu Gönder' butonuna tekrar basınız.")
+                                    st.stop()
                                 
                                 if df_yanitlar_live.empty or "numara" not in df_yanitlar_live.columns:
                                     df_yanitlar_live = pd.DataFrame(columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"])
@@ -560,7 +576,7 @@ with tab1 if False else tab2:
 
             with st.expander("🗑️ Doldurulmuş Öğrenci Form Yanıtını Sil / Sıfırla", expanded=True):
                 df_y_del = get_data_live("yanitlar")
-                if not df_y_del.empty and "numara" in df_y_del.columns:
+                if df_y_del is not None and not df_y_del.empty and "numara" in df_y_del.columns:
                     df_valid_y = df_y_del[df_y_del["numara"].astype(str).str.strip() != ""].copy()
                     if not df_valid_y.empty:
                         df_valid_y["disp_sil"] = df_valid_y.apply(lambda r: f"{r['numara']} - {r.get('ad_soyad', '')} ({r.get('sinif', '')}/{r.get('sube', '')})", axis=1)
