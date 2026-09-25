@@ -4,6 +4,10 @@ import datetime
 import json
 import re
 import io
+import threading
+
+# TÜM ÖĞRENCİLERİ SIRAYA SOKACAK KÜRESEL TURNİKE (MUTEX LOCK)
+sheet_lock = threading.Lock()
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================
@@ -145,30 +149,32 @@ def get_data_live(worksheet_name):
     return None
 
 def save_data(worksheet_name, df, allow_delete=False):
-    """Mutlak Güvenlik Kilitli Kaydetme Fonksiyonu"""
-    if df.empty and worksheet_name in ["yanitlar", "ogrenciler", "sorular"]:
-        st.error(f"🚨 **GÜVENLİK KİLİDİ**: {worksheet_name} tablosu boş olduğu için veri kaybını önlemek amacıyla işlem engellendi!")
-        return False
-        
-    if worksheet_name == "yanitlar" and not allow_delete:
-        existing_df = get_data_live("yanitlar")
-        
-        # Hata anında üzerine yazmayı mutlak reddet
-        if existing_df is None:
-            st.error("🚨 **GÜVENLİK KİLİDİ**: Google Sheets canlı verisine ulaşılamadı. Veri kaybını önlemek için kaydetme DURDURULDU! Lütfen az sonra tekrar deneyin.")
+    """Sıra Kilitli (Thread-Safe) Kaydetme Fonksiyonu"""
+    
+    # Kilit mekanizması: Aynı anda sadece TEK BİR İŞLEM içeri girebilir, diğerleri sırasını bekler!
+    with sheet_lock:
+        if df.empty and worksheet_name in ["yanitlar", "ogrenciler", "sorular"]:
+            st.error(f"🚨 **GÜVENLİK KİLİDİ**: {worksheet_name} tablosu boş olduğu için işlem engellendi!")
             return False
             
-        if not existing_df.empty and len(df) < len(existing_df):
-            st.error(f"🚨 **GÜVENLİK KİLİDİ**: Kaydedilecek yanıt sayısı ({len(df)}), mevcut veriden ({len(existing_df)}) az! Yanıt silinmesini önlemek için işlem durduruldu.")
-            return False
+        if worksheet_name == "yanitlar" and not allow_delete:
+            existing_df = get_data_live("yanitlar")
+            
+            if existing_df is None:
+                st.error("🚨 **GÜVENLİK KİLİDİ**: Google Sheets canlı verisine ulaşılamadı. Lütfen az sonra tekrar deneyin.")
+                return False
+                
+            if not existing_df.empty and len(df) < len(existing_df):
+                st.error("🚨 **GÜVENLİK KİLİDİ**: Veri kaybı riski nedeniyle işlem durduruldu.")
+                return False
 
-    try:
-        conn_gs.update(worksheet=worksheet_name, data=df)
-        clear_all_caches()
-        return True
-    except Exception as e:
-        st.error(f"❌ Google Sheets güncelleme hatası: {e}")
-        return False
+        try:
+            conn_gs.update(worksheet=worksheet_name, data=df)
+            clear_all_caches()
+            return True
+        except Exception as e:
+            st.error(f"❌ Google Sheets güncelleme hatası: {e}")
+            return False
 
 def sort_sinif_sube_key(item):
     m = re.search(r'(\d+)', str(item))
