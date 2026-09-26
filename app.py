@@ -812,7 +812,7 @@ with tab2:
     st.subheader("Panel")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
 
-    admin_pass = st.secrets.get("ADMIN_PASSWORD", "bettiyin")
+    admin_pass = st.secrets.get("ADMIN_PASSWORD", "")
 
     if sifre == admin_pass:
         if st.button("🔄 Google Sheets Verilerini Yenile / Önbelleği Temizle"):
