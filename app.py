@@ -441,7 +441,7 @@ def write_report_sheet(worksheet_name, df):
             ws = get_ws(worksheet_name)
             values = [list(df.columns)] + df.astype(str).values.tolist() if not df.empty else [list(df.columns)]
             api_call_with_retry(ws.clear)
-            api_call_with_retry(ws.update, range_name="A1", values=values, value_input_option="RAW")
+            api_call_with_retry(ws.update, range_name="A1", values=values, value_input_option="USER_ENTERED")
     except Exception:
         pass
 
