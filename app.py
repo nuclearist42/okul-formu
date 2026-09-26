@@ -1,55 +1,8 @@
-# ==========================================================================
-# KONYA LİSESİ ÖĞRENCİ BİLGİ TOPLAMA SİSTEMİ
-# ==========================================================================
-# BU SÜRÜMDE YAPILAN KRİTİK DÜZELTMELER (veri kaybı / "sheet siliniyor" sorunu için):
-#
-# 1) ESKİ KOD: Tek bir öğrenci cevabı eklemek için TÜM "yanitlar" sayfası
-#    okunuyor, pandas'ta yeni satır ekleniyor, sonra sayfanın TAMAMI
-#    conn.update() ile yeniden yazılıyordu. İki öğrenci neredeyse aynı anda
-#    form gönderdiğinde, ikincisi birincinin eklediği satırı görmeden eski
-#    (bayat) tabloyu yeniden yazıyor ve birincinin cevabını sessizce siliyordu.
-#    YENİ KOD: gspread ile SADECE ilgili tek satır ekleniyor (append_row) ya da
-#    güncelleniyor (targeted range update). Başka hiçbir satıra dokunulmuyor.
-#
-# 2) ESKİ KOD: threading.Lock() sadece yazma anını kilitliyordu; okuma
-#    (mevcut veriyi çekme) kilidin DIŞINDA yapılıyordu. Bu da "kontrol et,
-#    sonra yaz" (TOCTOU) yarış durumuna açık kapı bırakıyordu.
-#    YENİ KOD: okuma + satır bulma + yazma işleminin TAMAMI tek bir kilit
-#    bloğu içinde, tek bir atomik işlem olarak yapılıyor.
-#
-# 3) ESKİ KOD: Google Sheets'e ağ/oturum hatası olduğunda fonksiyon None
-#    dönüyor ve bu None, st.cache_data tarafından 5 dakika boyunca "geçerli
-#    sonuç" gibi ÖNBELLEĞE ALINIYORDU.
-#    YENİ KOD: Hatalar önbelleğe hiç yazılmıyor; sadece başarılı okumalar
-#    önbelleklenir, hata durumunda bir sonraki çağrıda tekrar denenir.
-#
-# 4) ESKİ KOD: Her tek öğrenci gönderiminde "istatistik" ve "doldurmayanlar"
-#    sayfaları da tam olarak yeniden hesaplanıp yazılıyordu → tek gönderim
-#    başına 6-7 Google Sheets API çağrısı. Sınıfın tamamı aynı anda form
-#    doldurunca Google'ın dakikalık kotasına takılma ve yarım kalan
-#    yazma riski artıyordu.
-#    YENİ KOD: İstatistik senkronizasyonu en fazla dakikada bir otomatik
-#    çalışır (throttle); admin panelindeki "Yenile" butonu istenildiğinde
-#    anında (force=True) çalıştırabilir.
-#
-# 5) ESKİ KOD: e-Okul Excel yükleme, öğrenci listesinin TAMAMINI hiçbir
-#    onay istemeden (allow_delete=True) üzerine yazıyordu. Yanlış/eksik
-#    dosya yüklenirse tüm öğrenci listesi tek seferde küçülebiliyordu.
-#    YENİ KOD: Yeni liste, mevcut listeden belirgin şekilde küçükse admin
-#    açıkça onaylamadan işlem durur.
-#
-# NOT: secrets.toml dosyanızı DEĞİŞTİRMENİZE gerek yok. Aynı
-# [connections.gsheets] bloğunu (service account bilgileri + "spreadsheet"
-# alanı) kullanmaya devam ediyoruz; sadece streamlit-gsheets sarmalayıcısı
-# yerine gspread'i doğrudan, hedefli (tek satır) işlemler için kullanıyoruz.
-#
-# requirements.txt için: gspread ve google-auth paketlerinin kurulu olması
-# yeterli (genelde streamlit-gsheets'in bağımlılığı olarak zaten kuruludur).
-# ==========================================================================
-
 import streamlit as st
 import pandas as pd
 import datetime
+import json
+import os
 import re
 import io
 import time
@@ -59,14 +12,31 @@ import gspread
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
 
-# TÜM ÖĞRENCİLERİ SIRAYA SOKACAK KÜRESEL TURNİKE (MUTEX LOCK)
-sheet_lock = threading.Lock()
-
 st.set_page_config(page_title="Konya Lisesi Bilgi Toplama Sistemi", layout="wide")
 
 # ==========================================
-# 0. GOOGLE SHEETS BAĞLANTISI (gspread doğrudan)
+# 0. GERÇEK PAYLAŞIMLI KİLİT VE ÖNBELLEK (SINGLETON)
 # ==========================================
+@st.cache_resource(show_spinner=False)
+def get_global_lock():
+    """Tüm kullanıcı oturumları arasında gerçekten paylaşılan TEK kilit nesnesi."""
+    return threading.Lock()
+
+
+@st.cache_resource(show_spinner=False)
+def get_shared_state():
+    """Rerun'larda sıfırlanmayan kalıcı sunucu önbelleği ve acil yedek kasası."""
+    return {
+        "cache_store": {},
+        "last_stats_sync": 0.0,
+        "emergency_vault": [],  # Gönderilen her yanıtın sunucu RAM'indeki kopyası
+    }
+
+
+sheet_lock = get_global_lock()
+shared_state = get_shared_state()
+EMERGENCY_LOG_FILE = "yanitlar_acil_yedek.jsonl"
+
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -78,6 +48,9 @@ def get_gspread_client():
     creds_info = dict(st.secrets["connections"]["gsheets"])
     creds_info.pop("spreadsheet", None)
     creds_info.pop("spreadsheet_id", None)
+    creds_info.pop("ttl", None)
+    creds_info.pop("worksheet", None)
+    creds_info["type"] = "service_account"
     creds = Credentials.from_service_account_info(creds_info, scopes=GOOGLE_SCOPES)
     return gspread.authorize(creds)
 
@@ -89,8 +62,7 @@ def get_spreadsheet():
     sheet_ref = conf.get("spreadsheet") or conf.get("spreadsheet_id")
     if not sheet_ref:
         raise RuntimeError(
-            "secrets.toml içindeki [connections.gsheets] bloğunda 'spreadsheet' "
-            "alanı bulunamadı."
+            "secrets.toml içindeki [connections.gsheets] bloğunda 'spreadsheet' alanı bulunamadı."
         )
     if str(sheet_ref).startswith("http"):
         return client.open_by_url(sheet_ref)
@@ -98,12 +70,11 @@ def get_spreadsheet():
 
 
 def get_ws(worksheet_name):
-    """Güncel worksheet handle'ı döner (bu sadece metadata çağrısıdır, ucuzdur)."""
     return get_spreadsheet().worksheet(worksheet_name)
 
 
-def api_call_with_retry(func, *args, retries=3, base_delay=1.2, **kwargs):
-    """Geçici Google API hatalarında (429/500/503 vb.) küçük bekleme ile tekrar dener."""
+def api_call_with_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
+    """Geçici Google API kota/ağ hatalarında otomatik bekleyip tekrar dener."""
     last_err = None
     for attempt in range(retries):
         try:
@@ -113,18 +84,31 @@ def api_call_with_retry(func, *args, retries=3, base_delay=1.2, **kwargs):
             time.sleep(base_delay * (attempt + 1))
         except Exception as e:
             last_err = e
-            break
+            if attempt < retries - 1:
+                time.sleep(base_delay)
+            else:
+                break
     raise last_err
 
 
 def col_letter(n):
-    """n. sütunun harfini döner (1 -> A, 27 -> AA ...)."""
-    a1 = rowcol_to_a1(1, n)
+    a1 = rowcol_to_a1(1, max(1, int(n)))
     return re.sub(r"\d+$", "", a1)
 
 
+def log_to_emergency_vault(row_dict):
+    """Her yanıtı Google Sheets dışında sunucu belleğine ve diske de yedekler."""
+    try:
+        entry = dict(row_dict)
+        shared_state["emergency_vault"].append(entry)
+        with open(EMERGENCY_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 # ==========================================
-# 1. TEMİZLEME / NORMALİZASYON YARDIMCILARI (değişmedi)
+# 1. TEMİZLEME / NORMALİZASYON YARDIMCILARI
 # ==========================================
 def clean_val(val, default=""):
     if pd.isna(val) or val is None:
@@ -241,9 +225,9 @@ def mask_name(name):
 
 
 # ==========================================
-# 2. DÜŞÜK SEVİYE OKUMA/YAZMA (gspread tabanlı, atomik)
+# 2. GÜVENLİ OKUMA / SATIR BAZLI YAZMA
 # ==========================================
-def ws_values_to_df(values):
+def ws_values_to_df(values, dedup_numara=False):
     if not values:
         return pd.DataFrame()
     header = values[0]
@@ -266,123 +250,173 @@ def ws_values_to_df(values):
     df = pd.DataFrame(fixed_rows, columns=clean_header)
     for col in df.columns:
         df[col] = df[col].apply(clean_val)
+
+    if dedup_numara and "numara" in df.columns and not df.empty:
+        df = df[df["numara"].astype(str).str.strip() != ""]
+        df = df.drop_duplicates(subset=["numara"], keep="last").reset_index(drop=True)
     return df
 
 
 def read_sheet_live(worksheet_name):
-    """Her zaman Google Sheets'ten anlık veri okur. Hata olursa None döner
-    ve bu None ASLA önbelleğe yazılmaz (önceki sürümdeki hata buydu)."""
     try:
         ws = get_ws(worksheet_name)
         values = api_call_with_retry(ws.get_all_values)
-        return ws_values_to_df(values)
+        return ws_values_to_df(values, dedup_numara=(worksheet_name == "yanitlar"))
     except Exception as e:
         st.session_state["_last_gsheet_error"] = str(e)
         return None
 
 
 def get_data_live(worksheet_name):
-    """Bağlantı koparsa None döner (güvenliği tetiklemek için)."""
     df = read_sheet_live(worksheet_name)
     if df is None:
-        st.error(f"⚠️ Google Sheets bağlantı hatası: {st.session_state.get('_last_gsheet_error', 'bilinmeyen hata')}")
+        st.error(f"⚠️ Google Sheets bağlantı hatası: {st.session_state.get('_last_gsheet_error', 'Bilinmeyen hata')}")
     return df
 
 
-# Basit, elle yönetilen TTL önbelleği (sadece BAŞARILI okumalar saklanır)
-_CACHE_STORE = {}
-_CACHE_TTL_SECONDS = 20
-
-
 def get_data(worksheet_name):
+    """Gerçek paylaşımlı sunucu önbelleği: kota aşımını tamamen önler."""
+    ttl = 120 if worksheet_name in ["ogrenciler", "sorular"] else 30
     now = time.time()
-    cached = _CACHE_STORE.get(worksheet_name)
-    if cached and (now - cached["ts"] < _CACHE_TTL_SECONDS):
+    cache_store = shared_state["cache_store"]
+    cached = cache_store.get(worksheet_name)
+    if cached and (now - cached["ts"] < ttl):
         return cached["df"].copy()
 
     df = read_sheet_live(worksheet_name)
     ss_key = f"backup_df_{worksheet_name}"
 
     if df is not None:
-        _CACHE_STORE[worksheet_name] = {"df": df, "ts": now}
+        cache_store[worksheet_name] = {"df": df, "ts": now}
         if not df.empty:
             st.session_state[ss_key] = df
         return df.copy()
 
+    if cached:
+        return cached["df"].copy()
     if ss_key in st.session_state:
         return st.session_state[ss_key].copy()
     return pd.DataFrame()
 
 
 def clear_all_caches():
-    _CACHE_STORE.clear()
+    shared_state["cache_store"].clear()
     for key in list(st.session_state.keys()):
-        if key.startswith("backup_df_"):
+        if key.startswith("backup_df_") or key.startswith("checked_student_"):
             del st.session_state[key]
 
 
-def ensure_headers(ws, needed_columns):
-    """Başlık satırına eksik sütunları ekler; MEVCUT VERİ SATIRLARINA DOKUNMAZ."""
-    header = api_call_with_retry(ws.row_values, 1)
-    if not header:
-        header = list(needed_columns)
-        api_call_with_retry(ws.update, "1:1", [header], value_input_option="RAW")
-        return header
-    missing = [c for c in needed_columns if c not in header]
-    if missing:
-        new_header = header + missing
-        api_call_with_retry(ws.update, "1:1", [new_header], value_input_option="RAW")
-        return new_header
-    return header
-
-
-def find_row_by_key(ws, header, key_col, key_val):
-    if key_col not in header:
-        return None
-    key_idx = header.index(key_col)
-    values = api_call_with_retry(ws.get_all_values)
-    key_val_str = str(key_val)
-    for i, r in enumerate(values[1:], start=2):
-        cell = r[key_idx] if len(r) > key_idx else ""
-        if clean_val(cell) == key_val_str:
-            return i
-    return None
-
-
 def upsert_row(worksheet_name, key_col, key_val, row_dict):
-    """`key_col`==`key_val` olan satırı günceller; yoksa yeni satır ekler.
-    Okuma + arama + yazma TEK bir kilit bloğunda, ATOMİK olarak yapılır.
-    Sadece TEK satır etkilenir; tablonun geri kalanına ASLA dokunulmaz."""
+    """
+    SADECE ilgili öğrencinin tek satırını ekler veya günceller.
+    Tablonun geri kalanına ASLA dokunulmaz, ws.clear() ASLA çağrılmaz.
+    """
+    if worksheet_name == "yanitlar":
+        log_to_emergency_vault(row_dict)
+
+    key_val_str = clean_val(key_val)
+    if not key_val_str:
+        raise ValueError("Anahtar değer (numara/id) boş olamaz.")
+
     with sheet_lock:
         ws = get_ws(worksheet_name)
-        header = ensure_headers(ws, list(row_dict.keys()) + [key_col])
-        row_idx = find_row_by_key(ws, header, key_col, key_val)
-        row_values = [str(row_dict.get(h, "")) for h in header]
+        all_values = api_call_with_retry(ws.get_all_values)
 
-        if row_idx:
-            rng = f"A{row_idx}:{col_letter(len(header))}{row_idx}"
-            api_call_with_retry(ws.update, rng, [row_values], value_input_option="RAW")
+        needed_cols = [key_col] + [k for k in row_dict.keys() if k != key_col]
+
+        if not all_values:
+            header = needed_cols
+            if len(header) > ws.col_count:
+                api_call_with_retry(ws.add_cols, len(header) - ws.col_count)
+            api_call_with_retry(
+                ws.update,
+                range_name=f"A1:{col_letter(len(header))}1",
+                values=[header],
+                value_input_option="RAW",
+            )
+            data_rows = []
+        else:
+            header = [str(h).strip() for h in all_values[0]]
+            data_rows = all_values[1:]
+            missing = [c for c in needed_cols if c not in header]
+            if missing:
+                header = header + missing
+                if len(header) > ws.col_count:
+                    api_call_with_retry(ws.add_cols, len(header) - ws.col_count)
+                api_call_with_retry(
+                    ws.update,
+                    range_name=f"A1:{col_letter(len(header))}1",
+                    values=[header],
+                    value_input_option="RAW",
+                )
+
+        if key_col not in header:
+            raise RuntimeError(f"'{worksheet_name}' sayfasında '{key_col}' sütunu bulunamadı!")
+
+        key_idx = header.index(key_col)
+        target_row_idx = None
+        existing_row = None
+
+        for i, r in enumerate(data_rows, start=2):
+            cell_val = clean_val(r[key_idx]) if len(r) > key_idx else ""
+            if cell_val == key_val_str:
+                target_row_idx = i
+                existing_row = list(r) + [""] * max(0, len(header) - len(r))
+
+        if target_row_idx is not None:
+            # Mevcut satırdaki eski/ekstra sütunları koruyarak yalnızca yeni alanları güncelle
+            final_row = existing_row[:len(header)]
+            for col_name, val in row_dict.items():
+                if col_name in header:
+                    final_row[header.index(col_name)] = "" if val is None else str(val)
+            rng = f"A{target_row_idx}:{col_letter(len(header))}{target_row_idx}"
+            api_call_with_retry(
+                ws.update,
+                range_name=rng,
+                values=[final_row],
+                value_input_option="RAW",
+            )
             return True, "updated"
         else:
-            api_call_with_retry(ws.append_row, row_values, value_input_option="RAW")
+            final_row = ["" if row_dict.get(h) is None else str(row_dict.get(h, "")) for h in header]
+            api_call_with_retry(
+                ws.append_row,
+                final_row,
+                value_input_option="RAW",
+                table_range="A1",
+            )
             return True, "inserted"
 
 
 def delete_row_by_key(worksheet_name, key_col, key_val):
+    key_val_str = clean_val(key_val)
     with sheet_lock:
         ws = get_ws(worksheet_name)
-        header = api_call_with_retry(ws.row_values, 1)
-        row_idx = find_row_by_key(ws, header, key_col, key_val)
-        if row_idx:
-            api_call_with_retry(ws.delete_rows, row_idx)
-            return True
-        return False
+        all_values = api_call_with_retry(ws.get_all_values)
+        if not all_values:
+            return False
+        header = [str(h).strip() for h in all_values[0]]
+        if key_col not in header:
+            return False
+        key_idx = header.index(key_col)
+        # Aynı numaradan birden fazla varsa alttan üste doğru sil
+        rows_to_delete = []
+        for i, r in enumerate(all_values[1:], start=2):
+            cell_val = clean_val(r[key_idx]) if len(r) > key_idx else ""
+            if cell_val == key_val_str:
+                rows_to_delete.append(i)
+        if not rows_to_delete:
+            return False
+        for r_idx in reversed(rows_to_delete):
+            api_call_with_retry(ws.delete_rows, r_idx)
+        return True
 
 
 def replace_full_sheet(worksheet_name, df, allow_shrink=False):
-    """Bilinçli TOPLU değişiklikler için (örn. e-Okul listesi yükleme).
-    Öğrenci/soru/yanıt kaybını önlemek için: yeni veri, mevcut veriden
-    belirgin şekilde küçükse `allow_shrink=True` verilmediği sürece durur."""
+    """YALNIZCA 'ogrenciler' listesini yüklemek için kullanılır. 'yanitlar' için KESİNLİKLE yasaktır."""
+    if worksheet_name == "yanitlar":
+        raise RuntimeError("GÜVENLİK ENGELİ: 'yanitlar' sayfası topluca silinip yazılamaz!")
+
     with sheet_lock:
         ws = get_ws(worksheet_name)
         current_values = api_call_with_retry(ws.get_all_values)
@@ -394,43 +428,40 @@ def replace_full_sheet(worksheet_name, df, allow_shrink=False):
 
         values = [list(df.columns)] + df.astype(str).values.tolist() if not df.empty else [list(df.columns)]
         api_call_with_retry(ws.clear)
-        api_call_with_retry(ws.update, "A1", values, value_input_option="RAW")
+        api_call_with_retry(ws.update, range_name="A1", values=values, value_input_option="RAW")
         return True, current_rows, new_rows
 
 
 def write_report_sheet(worksheet_name, df):
-    """istatistik / doldurmayanlar gibi TÜRETİLMİŞ (kaynak olmayan) rapor
-    sayfaları için: her seferinde sıfırdan yeniden hesaplandığından tam
-    üzerine yazma güvenlidir (kalıcı veri kaybı riski taşımaz)."""
+    """Sadece türetilmiş rapor sayfaları (istatistik ve doldurmayanlar) içindir."""
+    if worksheet_name not in ["istatistik", "doldurmayanlar"]:
+        return
     try:
         with sheet_lock:
             ws = get_ws(worksheet_name)
             values = [list(df.columns)] + df.astype(str).values.tolist() if not df.empty else [list(df.columns)]
             api_call_with_retry(ws.clear)
-            api_call_with_retry(ws.update, "A1", values, value_input_option="RAW")
+            api_call_with_retry(ws.update, range_name="A1", values=values, value_input_option="RAW")
     except Exception:
         pass
 
 
 # ==========================================
-# 3. İSTATİSTİK SENKRONİZASYONU (throttled — dakikada en fazla 1 kez otomatik)
+# 3. İSTATİSTİK SENKRONİZASYONU (GERÇEK THROTTLE: 120 SANİYE)
 # ==========================================
-_LAST_STATS_SYNC = {"ts": 0.0}
-STATS_SYNC_MIN_INTERVAL = 60.0
+STATS_SYNC_MIN_INTERVAL = 120.0
 
 
 def sync_stats_to_gsheet(force=False):
     now = time.time()
-    if not force and (now - _LAST_STATS_SYNC["ts"] < STATS_SYNC_MIN_INTERVAL):
+    if not force and (now - shared_state["last_stats_sync"] < STATS_SYNC_MIN_INTERVAL):
         return
-    _LAST_STATS_SYNC["ts"] = now
+    shared_state["last_stats_sync"] = now
     try:
         df_students = get_data_live("ogrenciler")
         df_yanitlar = get_data_live("yanitlar")
 
-        if df_students is None or df_yanitlar is None:
-            return
-        if df_students.empty:
+        if df_students is None or df_yanitlar is None or df_students.empty:
             return
 
         if not df_yanitlar.empty:
@@ -465,7 +496,7 @@ def sync_stats_to_gsheet(force=False):
 
 
 # ==========================================
-# 4. e-OKUL EXCEL PARSER (sadece PARSE eder, kaydetmez)
+# 4. e-OKUL EXCEL PARSER VE KURTARMA BİRLEŞTİRİCİ
 # ==========================================
 def parse_eokul_file(file_buffer):
     def clean(val):
@@ -529,7 +560,66 @@ def parse_eokul_file(file_buffer):
     df_new = pd.DataFrame(all_students) if all_students else pd.DataFrame(
         columns=["numara", "sinif", "sube", "ogretmen", "ad_soyad"]
     )
-    return df_new, len(all_students)
+    if not df_new.empty:
+        df_new = df_new.drop_duplicates(subset=["numara"], keep="last").reset_index(drop=True)
+    return df_new, len(df_new)
+
+
+def merge_recovered_responses_into_sheet(recovered_df, overwrite_existing=False):
+    """Sürüm geçmişinden indirilen yedek tablodaki yanıtları mevcut yanitlar sayfasına güvenle ekler."""
+    if recovered_df is None or recovered_df.empty:
+        return 0, 0
+
+    recovered_df.columns = [str(c).strip() for c in recovered_df.columns]
+    if "numara" not in recovered_df.columns and "OKUL NO" in recovered_df.columns:
+        recovered_df = recovered_df.rename(columns={"OKUL NO": "numara", "ADI SOYADI": "ad_soyad"})
+
+    if "numara" not in recovered_df.columns:
+        raise ValueError("Yüklenen dosyada 'numara' veya 'OKUL NO' sütunu bulunamadı.")
+
+    with sheet_lock:
+        ws = get_ws("yanitlar")
+        all_values = api_call_with_retry(ws.get_all_values)
+        current_df = ws_values_to_df(all_values, dedup_numara=True)
+        existing_nums = set(current_df["numara"].astype(str).str.strip()) if not current_df.empty and "numara" in current_df.columns else set()
+
+        header = [str(h).strip() for h in all_values[0]] if all_values else list(recovered_df.columns)
+        missing_cols = [c for c in recovered_df.columns if c not in header and c not in ["SINIF/ŞUBE", "DURUM"]]
+        if missing_cols:
+            header = header + missing_cols
+            if len(header) > ws.col_count:
+                api_call_with_retry(ws.add_cols, len(header) - ws.col_count)
+            api_call_with_retry(ws.update, range_name=f"A1:{col_letter(len(header))}1", values=[header], value_input_option="RAW")
+
+        rows_to_append = []
+        skipped = 0
+        added = 0
+
+        for _, r in recovered_df.iterrows():
+            no_str = clean_val(r.get("numara", ""))
+            if not no_str:
+                continue
+            # Rapor dosyasından yüklendiyse DOLDURMADI olanları atla
+            if "DURUM" in recovered_df.columns and clean_val(r.get("DURUM", "")) == "DOLDURMADI":
+                continue
+
+            if no_str in existing_nums and not overwrite_existing:
+                skipped += 1
+                continue
+
+            row_vals = [clean_val(r.get(h, "")) for h in header]
+            if "tarih" in header and not clean_val(r.get("tarih", "")):
+                row_vals[header.index("tarih")] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            rows_to_append.append(row_vals)
+            existing_nums.add(no_str)
+            added += 1
+
+        if rows_to_append:
+            api_call_with_retry(ws.append_rows, rows_to_append, value_input_option="RAW", table_range="A1")
+
+        clear_all_caches()
+        return added, skipped
 
 
 # ==========================================
@@ -588,18 +678,22 @@ with tab1:
                     secilen_no = clean_val(secilen_ogrenci.split(" - ")[0])
                     student_row = filtered[filtered["numara"].astype(str) == secilen_no].iloc[0]
 
-                    df_yanitlar_check = get_data_live("yanitlar")
+                    # KOTA KORUMASI: Öğrencinin daha önce doldurup doldurmadığını her şık tıklamasında değil,
+                    # sadece öğrenci seçildiğinde kontrol et ve session_state'te tut.
+                    if st.session_state.get("checked_student_no") != secilen_no:
+                        df_yanitlar_check = get_data("yanitlar")
+                        has_prev = False
+                        if df_yanitlar_check is not None and not df_yanitlar_check.empty and "numara" in df_yanitlar_check.columns:
+                            has_prev = secilen_no in df_yanitlar_check["numara"].astype(str).str.strip().values
+                        st.session_state["checked_student_no"] = secilen_no
+                        st.session_state[" checked_has_prev"] = has_prev
 
-                    mevcut_yanit = pd.DataFrame()
-                    if df_yanitlar_check is not None and not df_yanitlar_check.empty and "numara" in df_yanitlar_check.columns:
-                        mevcut_yanit = df_yanitlar_check[df_yanitlar_check["numara"].astype(str) == secilen_no]
+                    daha_once_doldurmus = st.session_state.get(" checked_has_prev", False)
+                    can_submit = True
 
-                    can_submit, is_update = True, False
-
-                    if not mevcut_yanit.empty:
+                    if daha_once_doldurmus:
                         st.warning(f"⚠️ **{secilen_no}** numaralı öğrenci olarak daha önce form doldurulmuştur.")
                         if st.checkbox("Yanıtlarımı güncellemek istiyorum."):
-                            is_update = True
                             st.info(
                                 "🔒 **Gizlilik ve Güvenlik Bildirimi:** Kişisel verilerinizin gizliliği gereği daha önce "
                                 "girmiş olduğunuz bilgiler ekranda gösterilmemektedir. Bilgilerinizi güncellemek için "
@@ -699,24 +793,22 @@ with tab1:
                                 for err in validation_errors:
                                     st.error(err)
                             else:
-                                # --- KRİTİK DÜZELTME ---
-                                # Tüm tabloyu okuyup yeniden yazmak yerine, SADECE bu
-                                # öğrencinin satırını atomik biçimde ekliyor/güncelliyoruz.
-                                # Başka bir öğrencinin cevabına dokunulmaz.
                                 try:
-                                    ok, action = upsert_row("yanitlar", "numara", secilen_no, new_row_data)
+                                    with st.spinner("Yanıtınız güvenli sırayla kaydediliyor, lütfen bekleyin..."):
+                                        ok, action = upsert_row("yanitlar", "numara", secilen_no, new_row_data)
                                     if ok:
                                         clear_all_caches()
                                         sync_stats_to_gsheet(force=False)
+                                        st.session_state[" checked_has_prev"] = True
                                         st.success("✅ Form yanıtlarınız başarıyla kaydedildi!")
                                 except Exception as e:
                                     st.error(
-                                        "❌ Google Sheets'e yazarken bir hata oluştu. Verileriniz kaybolmadı, "
-                                        f"lütfen 'Formu Gönder' butonuna tekrar basın. (Hata: {e})"
+                                        "❌ Google Sheets yoğunluğu nedeniyle kayıt anlık olarak gecikti. "
+                                        f"Lütfen 3 saniye bekleyip 'Formu Gönder' butonuna tekrar basın. (Detay: {e})"
                                     )
 
 # --- TAB 2: YÖNETİCİ & ÖĞRETMEN PANELİ ---
-with tab1 if False else tab2:
+with tab2:
     st.subheader("Panel")
     sifre = st.text_input("Yönetici Şifresi:", type="password")
 
@@ -761,7 +853,7 @@ with tab1 if False else tab2:
         else:
             merged_all = pd.DataFrame()
 
-        sub_tab1, sub_tab2, sub_tab3 = st.tabs(["📊 İstatistikler", "📗 Excel Raporu", "🛠️ Soru & e-Okul Yönetimi"])
+        sub_tab1, sub_tab2, sub_tab3 = st.tabs(["📊 İstatistikler", "📗 Excel Raporu", "🛠️ Soru, e-Okul & Veri Kurtarma"])
 
         with sub_tab1:
             st.markdown("### 📈 Genel ve Sınıf Bazlı Durum Takibi")
@@ -796,7 +888,7 @@ with tab1 if False else tab2:
                     ]
                     st.dataframe(doldurmayanlar, use_container_width=True)
             else:
-                st.info("Sistemde henüz öğrenci verisi yok. Lütfen 'Soru & e-Okul Yönetimi' sekmesinden e-Okul Excel dosyasını yükleyin.")
+                st.info("Sistemde henüz öğrenci verisi yok.")
 
         with sub_tab2:
             st.markdown("### 📗 Toplu Excel İndirme")
@@ -826,7 +918,58 @@ with tab1 if False else tab2:
                 st.info("Rapor oluşturmak için yeterli veri bulunamadı.")
 
         with sub_tab3:
-            st.markdown("### 🛠️ Sistem Yönetim Paneli")
+            st.markdown("### 🛠️ Sistem Yönetim ve Veri Kurtarma Paneli")
+
+            with st.expander("🚑 Sürüm Geçmişi Kurtarma / Farklı Yedekleri Birleştir", expanded=True):
+                st.info(
+                    "Google Sheets **Dosya > Sürüm geçmişi** içinde farklı saatlerde kalmış sürümleri 'Kopya oluştur' "
+                    "diyerek Excel (.xlsx) veya CSV olarak indirip buraya yükleyebilirsiniz. Sistem, mevcut tabloda "
+                    "olmayan öğrencileri hiçbir veriyi silmeden otomatik olarak alt alta ekleyecektir."
+                )
+                rec_files = st.file_uploader(
+                    "Birleştirilecek Excel (.xlsx) veya CSV dosyalarını seçin (Birden fazla seçebilirsiniz):",
+                    type=["xlsx", "xls", "csv"],
+                    accept_multiple_files=True,
+                )
+                overwrite_opt = st.checkbox("Mevcut öğrencinin kaydı varsa bile yüklenen dosyadakiyle güncelle", value=False)
+                if rec_files and st.button("🚑 Eksik Yanıtları Mevcut Tabloya Ekle / Birleştir", type="primary"):
+                    total_added, total_skipped = 0, 0
+                    for rf in rec_files:
+                        try:
+                            if rf.name.endswith(".csv"):
+                                r_df = pd.read_csv(rf, dtype=str)
+                            else:
+                                xl_rec = pd.ExcelFile(rf)
+                                sheet_to_read = "yanitlar" if "yanitlar" in xl_rec.sheet_names else xl_rec.sheet_names[0]
+                                r_df = xl_rec.parse(sheet_to_read, dtype=str)
+                            added, skipped = merge_recovered_responses_into_sheet(r_df, overwrite_existing=overwrite_opt)
+                            total_added += added
+                            total_skipped += skipped
+                        except Exception as e:
+                            st.error(f"❌ {rf.name} işlenirken hata: {e}")
+                    sync_stats_to_gsheet(force=True)
+                    st.success(f"✅ Kurtarma tamamlandı! **{total_added}** eksik öğrenci yanıtı eklendi ({total_skipped} zaten mevcut olduğu için korundu).")
+                    st.rerun()
+
+                # Sunucu RAM / Disk Acil Yedek Kasası İndirme
+                vault_list = list(shared_state.get("emergency_vault", []))
+                if os.path.exists(EMERGENCY_LOG_FILE):
+                    try:
+                        with open(EMERGENCY_LOG_FILE, "r", encoding="utf-8") as f:
+                            disk_rows = [json.loads(line) for line in f if line.strip()]
+                        if len(disk_rows) > len(vault_list):
+                            vault_list = disk_rows
+                    except Exception:
+                        pass
+                if vault_list:
+                    vault_buf = io.BytesIO()
+                    with pd.ExcelWriter(vault_buf, engine="openpyxl") as writer:
+                        pd.DataFrame(vault_list).to_excel(writer, index=False)
+                    st.download_button(
+                        f"🛡️ Sunucu Acil Yedek Kasasını İndir ({len(vault_list)} Kayıt)",
+                        data=vault_buf.getvalue(),
+                        file_name="SUNUCU_ACIL_YEDEK_YANITLAR.xlsx",
+                    )
 
             with st.expander("📥 e-Okul Excel Listesi Yükle / Güncelle", expanded=False):
                 uploaded_file = st.file_uploader(
@@ -836,7 +979,6 @@ with tab1 if False else tab2:
                 if uploaded_file and st.button("Dosyayı Analiz Et"):
                     df_parsed, toplam_parsed = parse_eokul_file(uploaded_file)
                     st.session_state["_pending_ogrenci_df"] = df_parsed
-                    st.session_state["_pending_ogrenci_toplam"] = toplam_parsed
 
                 pending_df = st.session_state.get("_pending_ogrenci_df")
                 if pending_df is not None:
@@ -849,11 +991,8 @@ with tab1 if False else tab2:
                     onay_gerekli = mevcut_sayi > 0 and yeni_sayi < mevcut_sayi * 0.9
                     force_ok = True
                     if onay_gerekli:
-                        st.warning(
-                            "⚠️ Yeni dosyadaki öğrenci sayısı, mevcut listeden belirgin şekilde daha az! "
-                            "Yanlış veya eksik bir dosya seçmiş olabilirsiniz."
-                        )
-                        force_ok = st.checkbox("Evet, öğrenci sayısının azalmasını onaylıyorum, üzerine yazmak istiyorum.")
+                        st.warning("⚠️ Yeni dosyadaki öğrenci sayısı mevcut listeden belirgin şekilde daha az!")
+                        force_ok = st.checkbox("Evet, öğrenci sayısının azalmasını onaylıyorum.")
 
                     if st.button("✅ Veritabanına İşle / Kaydet", type="primary", disabled=(onay_gerekli and not force_ok)):
                         ok, eski, yeni = replace_full_sheet("ogrenciler", pending_df, allow_shrink=True)
@@ -862,10 +1001,8 @@ with tab1 if False else tab2:
                             del st.session_state["_pending_ogrenci_df"]
                             clear_all_caches()
                             st.rerun()
-                        else:
-                            st.error("❌ İşlem güvenlik nedeniyle durduruldu.")
 
-            with st.expander("🗑️ Doldurulmuş Öğrenci Form Yanıtını Sil / Sıfırla", expanded=True):
+            with st.expander("🗑️ Doldurulmuş Öğrenci Form Yanıtını Sil / Sıfırla", expanded=False):
                 df_y_del = get_data_live("yanitlar")
                 if df_y_del is not None and not df_y_del.empty and "numara" in df_y_del.columns:
                     df_valid_y = df_y_del[df_y_del["numara"].astype(str).str.strip() != ""].copy()
@@ -877,7 +1014,6 @@ with tab1 if False else tab2:
                         if silinecek_ogrenci != "SEÇİNİZ":
                             sil_no = clean_val(silinecek_ogrenci.split(" - ")[0])
                             if st.button(f"🗑️ {sil_no} Numaralı Öğrencinin Yanıtlarını Tamamen Sil", type="primary"):
-                                # Sadece ilgili TEK satır silinir; başka hiçbir kayda dokunulmaz.
                                 if delete_row_by_key("yanitlar", "numara", sil_no):
                                     sync_stats_to_gsheet(force=True)
                                     clear_all_caches()
@@ -940,9 +1076,8 @@ with tab1 if False else tab2:
                     selected_y_parents = st.multiselect(
                         "Bağlı Olduğu Üst Soru(lar) (Şartlı Gösterim):",
                         options=list(parent_opts.keys()),
-                        help="Bu sorunun görünmesi için yanıtlanması gereken üst soruları seçin.",
                     )
-                    y_parent_val = st.text_input("Şart Değer(leri):", help="Örn: SAĞ (Eğer iki soru seçtiyseniz ikisi için de geçerli olur)")
+                    y_parent_val = st.text_input("Şart Değer(leri):", help="Örn: SAĞ")
 
                     if st.form_submit_button("➕ Soruyu Kaydet"):
                         if y_metin:
@@ -951,7 +1086,6 @@ with tab1 if False else tab2:
                             except Exception:
                                 max_id = 0
                             new_id = str(max_id + 1)
-
                             y_p_ids = ",".join([parent_opts[k] for k in selected_y_parents]) if selected_y_parents else "0"
 
                             new_q = {
@@ -963,7 +1097,6 @@ with tab1 if False else tab2:
                                 "bagli_parent_id": clean_id(y_p_ids),
                                 "bagli_parent_deger": clean_val(y_parent_val),
                             }
-                            # Sadece TEK satır eklenir; diğer sorulara dokunulmaz.
                             upsert_row("sorular", "id", new_id, new_q)
                             st.success("✅ Yeni soru kaydedildi!")
                             clear_all_caches()
@@ -1015,7 +1148,6 @@ with tab1 if False else tab2:
                                     "bagli_parent_id": clean_id(d_p_ids),
                                     "bagli_parent_deger": str(d_parent_val),
                                 }
-                                # Sadece BU sorunun satırı güncellenir; diğer sorular etkilenmez.
                                 upsert_row("sorular", "id", secilen_q_id, updated_q)
                                 st.success("✅ Soru güncellendi!")
                                 clear_all_caches()
@@ -1026,5 +1158,3 @@ with tab1 if False else tab2:
                                 st.success("🗑️ Soru silindi!")
                                 clear_all_caches()
                                 st.rerun()
-                    else:
-                        st.info("Düzenlenecek soru bulunamadı.")
