@@ -258,9 +258,22 @@ def ws_values_to_df(values, dedup_numara=False):
 
 
 def read_sheet_live(worksheet_name):
+    """
+    KRİTİK DÜZELTME: Bu fonksiyon artık diğer tüm okuma/yazma işlemleriyle
+    AYNI `sheet_lock`'u kullanıyor. Önceki sürümde okumalar kilitsizdi; onlarca
+    öğrenci aynı anda sayfa açıp "ogrenciler"/"sorular" okurken, başka biri
+    "yanitlar"a kilitli yazı yazıyordu — hepsi TEK bir paylaşılan gspread
+    istemcisini (st.cache_resource ile tüm oturumlar arası ortak) eşzamanlı,
+    senkronize edilmeden kullanıyordu. google-auth'un token yenileme katmanı
+    bu tür tam eşzamanlı, kilitsiz kullanımda thread-safe olduğu garanti
+    edilmeyen bir bileşendir; bu da bir isteğin yanlış sayfaya/aralığa
+    gitmesine yol açabilir. Tüm Sheets API çağrılarını (okuma dahil) aynı
+    kilitten geçirmek bu riski tamamen ortadan kaldırır.
+    """
     try:
-        ws = get_ws(worksheet_name)
-        values = api_call_with_retry(ws.get_all_values)
+        with sheet_lock:
+            ws = get_ws(worksheet_name)
+            values = api_call_with_retry(ws.get_all_values)
         return ws_values_to_df(values, dedup_numara=(worksheet_name == "yanitlar"))
     except Exception as e:
         st.session_state["_last_gsheet_error"] = str(e)
@@ -379,11 +392,17 @@ def upsert_row(worksheet_name, key_col, key_val, row_dict):
             return True, "updated"
         else:
             final_row = ["" if row_dict.get(h) is None else str(row_dict.get(h, "")) for h in header]
+            # KRİTİK DÜZELTME: insert_data_option="INSERT_ROWS" olmadan Google
+            # Sheets API, "OVERWRITE" moduna düşüyor ve boş hücreli (şartlı
+            # sorular nedeniyle sık görülen) satırları "boşluk" sanıp yeni
+            # veriyi mevcut satırların ÜZERİNE yazabiliyor. INSERT_ROWS, API'ye
+            # var olan hiçbir hücreye dokunmadan gerçekten yeni bir satır
+            # eklemesini zorunlu kılar.
             api_call_with_retry(
                 ws.append_row,
                 final_row,
                 value_input_option="RAW",
-                table_range="A1",
+                insert_data_option="INSERT_ROWS",
             )
             return True, "inserted"
 
@@ -616,7 +635,12 @@ def merge_recovered_responses_into_sheet(recovered_df, overwrite_existing=False)
             added += 1
 
         if rows_to_append:
-            api_call_with_retry(ws.append_rows, rows_to_append, value_input_option="RAW", table_range="A1")
+            api_call_with_retry(
+                ws.append_rows,
+                rows_to_append,
+                value_input_option="RAW",
+                insert_data_option="INSERT_ROWS",
+            )
 
         clear_all_caches()
         return added, skipped
