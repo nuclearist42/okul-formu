@@ -683,7 +683,8 @@ with tab1:
     elif df_questions.empty or "id" not in df_questions.columns:
         st.warning("Yönetim panelinden henüz soru eklenmemiş. Lütfen soruları oluşturun.")
     else:
-        siniflar = sorted(df_students["sinif"].astype(str).unique(), key=sort_sinif_sube_key)
+        #--- "yeni dönemde açılacak" siniflar = sorted(df_students["sinif"].astype(str).unique(), key=sort_sinif_sube_key)
+        st.info("📌 **BİLGİLENDİRME:** Bu eğitim öğretim yılına ait form doldurma işlemleri tamamlanmış ve sistem erişime kapatılmıştır. İlginiz için teşekkür ederiz.")
         secilen_sinif = st.selectbox("Sınıfınızı Seçin:", ["SEÇİNİZ"] + siniflar)
 
         if secilen_sinif != "SEÇİNİZ":
