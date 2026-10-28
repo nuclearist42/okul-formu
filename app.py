@@ -685,7 +685,8 @@ with tab1:
     else:
         #--- "yeni dönemde açılacak" siniflar = sorted(df_students["sinif"].astype(str).unique(), key=sort_sinif_sube_key)
         st.info("📌 **BİLGİLENDİRME:** Bu eğitim öğretim yılına ait form doldurma işlemleri tamamlanmış ve sistem erişime kapatılmıştır. İlginiz için teşekkür ederiz.")
-        secilen_sinif = st.selectbox("Sınıfınızı Seçin:", ["SEÇİNİZ"] + siniflar)
+        #--- "yeni dönemde açılacak"secilen_sinif = st.selectbox("Sınıfınızı Seçin:", ["SEÇİNİZ"] + siniflar)
+        secilen_sinif = "SEÇİNİZ" # Sınıf seçimini kilitler ve alttaki soruları gizler
 
         if secilen_sinif != "SEÇİNİZ":
             subeler = sorted(df_students[df_students["sinif"].astype(str) == secilen_sinif]["sube"].astype(str).unique())
